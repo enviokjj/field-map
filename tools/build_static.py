@@ -24,6 +24,7 @@
     python tools/build_static.py                       # .env 의 DB 로 인제군 굽기
     python tools/build_static.py --region adm_sigungu:5181000000
     python tools/build_static.py --zoom 12 16 --out docs
+    python tools/build_static.py --page-only        # 페이지만 고쳤을 때 (DB 불필요, 몇 초)
 """
 from __future__ import annotations
 
@@ -110,7 +111,36 @@ def main(argv=None):
     ap.add_argument("--zoom", nargs=2, type=int, default=[12, 16], metavar=("MIN", "MAX"))
     ap.add_argument("--out", default="docs")   # GitHub Pages 의 main/docs 를 그대로 쓴다
     ap.add_argument("--pad", type=float, default=0.05, help="지역 bbox 를 이만큼(도) 넓혀 굽는다")
+    ap.add_argument("--page-only", action="store_true",
+                    help="페이지·폰트만 web/ → out/ 으로 복사한다. DB 불필요, 타일·경계는 그대로 둔다")
     a = ap.parse_args(argv)
+
+    # ★페이지만 고쳤을 때 쓰는 길.
+    #   web/index.html 을 고쳐도 docs/ 는 굽기 산출물이라 **안 바뀐다** — 그대로 push 하면
+    #   사이트가 그대로다. 그렇다고 데이터까지 다시 구우면 DB 가 필요하고 오래 걸린다.
+    #   이 옵션이 그 사이를 메운다(복사만, 몇 초).
+    if a.page_only:
+        out = (ROOT / a.out).resolve()
+        if not out.is_dir():
+            raise SystemExit(f"{out} 가 없다 — 처음에는 --page-only 없이 전체를 구울 것")
+        import filecmp
+        changed = []
+        for src in (ROOT / "web").rglob("*"):
+            if not src.is_file():
+                continue
+            dst = out / src.relative_to(ROOT / "web")
+            same = dst.exists() and filecmp.cmp(src, dst, shallow=False)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            if not same:
+                changed.append(str(dst.relative_to(out)))
+        print(f"페이지 복사 → {out}")
+        for c in changed:
+            print(f"  갱신: {c}")
+        if not changed:
+            print("  (바뀐 파일 없음)")
+        print("\n  타일·경계는 그대로 둔다. 데이터까지 갱신하려면 --page-only 없이 다시 구울 것.")
+        return 0
 
     db = os.environ.get("DB_URL")
     if not db:
