@@ -73,7 +73,8 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
   <button data-bm="vworld">브이월드</button>
   <button data-bm="satellite">위성</button>
   <button data-bm="topo" id="btnTopo" style="display:none">지형</button>
-  <button id="btnRoad" class="sep" title="도로 중심선 — 확대해야 보입니다">도로</button>
+  <button id="btnAoi" class="sep" style="display:none" title="연구지역으로 이동">⛶ 연구지역</button>
+  <button id="btnRoad" title="도로 중심선 — 확대해야 보입니다">도로</button>
   <button id="btnGps" class="sep" title="현위치 — HTTPS 에서만 동작합니다">◎ 현위치</button>
 </div>
 <button id="gpsFab" title="현위치" aria-label="현위치">◎</button>
@@ -105,7 +106,12 @@ const API = FIELD_CFG.apiBase.replace(/\/$/, "");
      워커의 기준 URL 은 문서와 다를 수 있다(blob/스크립트 위치). 그러면 조용히 404 가 나고
      "도로가 안 보인다"로만 나타난다.
    그래서 페이지 주소를 기준으로 **직접 절대화**한다 — 루트 배포·하위경로 배포 모두 안전하다. */
-const api = (p) => API ? API + p : new URL(p.replace(/^\//, ""), document.baseURI).href;
+/* ★`new URL(p, base)` 를 쓰면 안 된다 — URL 생성자가 타일 템플릿의 중괄호를
+   퍼센트 인코딩한다: `{z}` → `%7Bz%7D`. 그러면 maplibre 가 치환을 못 해 없는 주소를 치고
+   **도로가 통째로 사라진다**(2026-08-28 실제로 그렇게 됐다).
+   그래서 '페이지가 있는 디렉터리'만 절대 주소로 구해 두고 **문자열로 붙인다**. */
+const PAGE_DIR = document.baseURI.replace(/[^/]*$/, "").replace(/\/$/, "");
+const api = (p) => (API || PAGE_DIR) + p;
 const fetchJson = async (p) => {
   const r = await fetch(api(p));
   if(!r.ok) throw new Error(`${p} → ${r.status}`);
@@ -219,11 +225,18 @@ function roadToggle(){
     : "도로(중심선) 표시");
 }
 document.getElementById("btnRoad").onclick=roadToggle;
+{ const b=document.getElementById("btnAoi"); if(b) b.onclick=aoiGo; }
 
 /* ══ 연구지역(AOI) — 서버에 등록된 것을 그대로 보여준다 ═════════════════════
    ★'연구지역 선택'(시도/시군구/읍면동/리·유역 클릭) 도구는 뺐다. 이 화면의 목적은
      **이미 정해진 연구지역**을 현장에서 확인하는 것이라, 고르는 기능이 필요 없다.
    AOI 는 catalog.asset(kind='aoi_cube') 의 footprint — 구축 시 잡힌 사각 범위다. */
+let aoiBounds=null;
+function aoiGo(){                            // 아이콘 → 연구지역으로 이동(텍스트 표시는 안 한다)
+  if(!aoiBounds){ status("연구지역을 아직 못 받았습니다", true); return; }
+  const [w,s2,e,n]=aoiBounds;
+  map.fitBounds([[w,s2],[e,n]],{padding:56});
+}
 async function aoiLoad(){
   let gj;
   try{ gj = await fetchJson("/aoi/items"); }
@@ -236,10 +249,8 @@ async function aoiLoad(){
   map.addLayer({id:"aoi-line", type:"line", source:"aoi",
     paint:{"line-color":AOI_COLOR,"line-width":["interpolate",["linear"],["zoom"],9,1.6,15,3.2],
            "line-dasharray":[3,2]}});
-  map.addLayer({id:"aoi-label", type:"symbol", source:"aoi",
-    layout:{"text-field":["get","name"],"text-font":["Noto Sans Regular"],"text-size":13,
-            "text-anchor":"top","text-offset":[0,0.6],"symbol-placement":"point"},
-    paint:{"text-color":AOI_COLOR,"text-halo-color":"#FFFFFF","text-halo-width":2.0}});
+  /* ★이름 라벨은 그리지 않는다. 폴리곤에 symbol 을 얹으면 확대할수록 **타일마다 한 번씩**
+     찍혀 같은 이름이 여러 개로 보인다(면이 여러 타일에 걸치기 때문). 대신 버튼으로 옮긴다. */
   // 화면을 연구지역에 맞춘다 — 이 앱이 보여줄 대상이 그것이다
   let w=180,s2=90,e=-180,n=-90;
   feats.forEach(f=>{ (function walk(c){
@@ -247,8 +258,10 @@ async function aoiLoad(){
     c.forEach(walk); })(f.geometry.coordinates); });
   map.fitBounds([[w,s2],[e,n]],{padding:56, duration:0});
   const p0=feats[0].properties;
-  status(`연구지역 ${p0.name}` + (p0.km2?` · ${p0.km2} km²`:"") + (feats.length>1?` 외 ${feats.length-1}곳`:""));
-  return [w,s2,e,n];                        // 리를 이 범위로 받는다(아래)
+  aoiBounds=[w,s2,e,n];
+  const b=document.getElementById("btnAoi");
+  if(b){ b.style.display=""; b.title=`연구지역으로 이동 — ${p0.name}` + (p0.km2?` (${p0.km2} km²)`:""); }
+  return aoiBounds;                         // 리를 이 범위로 받는다(아래)
 }
 
 /* ══ 리(법정리) — 항상 표시 ═════════════════════════════════════════════════

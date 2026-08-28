@@ -41,6 +41,40 @@ def _check(res, name, ok, detail=""):
     return ok
 
 
+def _strip_js_comments(src: str) -> str:
+    """// 와 /* */ 주석을 걷어낸다(문자열 리터럴 안은 건드리지 않는다).
+
+    ★주석에 적어 둔 '하면 안 되는 것'에 검사가 스스로 걸리는 일을 막는다.
+    """
+    out, i, n = [], 0, len(src)
+    while i < n:
+        c = src[i]
+        if c in "\"'`":                       # 문자열 리터럴은 통째로 통과
+            q = c; out.append(c); i += 1
+            while i < n:
+                out.append(src[i])
+                if src[i] == "\\":
+                    i += 2
+                    if i <= n:
+                        continue
+                if src[i] == q:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if src.startswith("//", i):
+            i = src.find("\n", i)
+            if i < 0:
+                break
+            continue
+        if src.startswith("/*", i):
+            j = src.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+            continue
+        out.append(c); i += 1
+    return "".join(out)
+
+
 def _get(base, path, raw=False):
     try:
         with urllib.request.urlopen(base + path, timeout=30) as r:
@@ -205,9 +239,19 @@ def main(argv=None):
         # ★타일·글리프는 **워커**에서 요청된다. 워커의 기준 URL 은 문서와 다를 수 있어
         #   상대경로(`./tiles/…`)면 조용히 404 가 나고 "도로가 안 보인다"로만 나타난다.
         #   루트 절대경로(`/tiles/…`)도 안 된다 — 프로젝트 Pages 는 하위경로에 산다.
-        _check(res, "자료 주소를 절대 URL 로 만든다",
-               "new URL(" in html and "document.baseURI" in html and '"." + p' not in html,
-               "워커에서도 같은 곳을 가리키게")
+        # ★주석을 걷어내고 본다 — 아래 검사는 "new URL 을 **안** 쓴다"인데,
+        #   왜 쓰면 안 되는지 적어 둔 주석에 스스로 걸리면 검사가 뒤집힌다.
+        code = _strip_js_comments("\n".join(js))
+        _check(res, "페이지 디렉터리 기준 절대화", "document.baseURI" in code and "PAGE_DIR" in code)
+        # ★이게 핵심이다: URL 생성자에 넣으면 `{z}` → `%7Bz%7D` 로 인코딩돼
+        #   maplibre 가 치환을 못 하고 **도로가 통째로 사라진다**(실제로 그렇게 됐다).
+        _check(res, "타일 템플릿을 URL 생성자에 넣지 않는다", "new URL(" not in code,
+               "{z} 가 %7Bz%7D 로 인코딩된다")
+        _check(res, "타일 템플릿의 중괄호가 살아 있다",
+               # ★`html` 이 아니라 `code` 로 본다 — 왜 안 되는지 적어 둔 주석의 `%7B` 에
+               #   검사가 스스로 걸린다(같은 실수를 두 번 했다).
+               "/tiles/road_line/{z}/{x}/{y}.pbf" in code and "%7B" not in code,
+               "치환되지 않으면 없는 주소를 친다")
         from urllib.parse import urljoin
         for base_url, want in (("https://x.github.io/field-map/", "https://x.github.io/field-map/tiles/layers"),
                                ("https://x.example.com/", "https://x.example.com/tiles/layers")):
