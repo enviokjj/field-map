@@ -140,6 +140,7 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
   <button data-mm="point">● 점</button>
   <button data-mm="line">╱ 선</button>
   <button data-mm="polygon">▱ 사각형</button>
+  <button data-mm="free">✎ 자유선</button>
   <button data-mm="">■ 끄기</button>
   <div class="mdiv"></div>
   <button id="btnMemoClear" style="display:none" title="이 기기에 저장된 메모를 모두 지웁니다">🗑 전체 삭제</button>
@@ -412,8 +413,8 @@ async function riLoad(bounds){
      폴리곤/라인에 symbol 을 얹으면 도형이 여러 타일에 걸칠 때 타일마다 한 번씩 찍혀
      같은 글이 여러 개로 보인다(연구지역 이름에서 실제로 겪었다). */
 const MEMO_KEY = "fieldmap.memos.v1";
-const MEMO_MODES = [null, "point", "line", "polygon"];
-const MEMO_LABEL = {null:"✎ 메모", point:"✎ 점", line:"✎ 선", polygon:"✎ 사각형"};
+const MEMO_MODES = [null, "point", "line", "polygon", "free"];
+const MEMO_LABEL = {null:"✎ 메모", point:"✎ 점", line:"✎ 선", polygon:"✎ 사각형", free:"✎ 자유선"};
 let memoModeIdx = 0, drawPts = [];
 const memoMode = () => MEMO_MODES[memoModeIdx];
 
@@ -566,11 +567,12 @@ function memoPick(mode){
   const m=memoMode();
   map.getCanvas().style.cursor = m ? "crosshair" : "";
   // 사각형을 끌어 그리는 동안 지도가 같이 밀리면 안 된다
-  if(m==="polygon") map.dragPan.disable(); else map.dragPan.enable();
-  rectStart=null; rectPreview(null,null);
+  if(m==="polygon" || m==="free") map.dragPan.disable(); else map.dragPan.enable();
+  rectStart=null; freePts=null; rectPreview(null,null);
   status(m==="point"   ? "지점을 누르면 메모를 남깁니다"
        : m==="line"    ? "선 — 시작점과 끝점, 두 곳을 누르세요"
        : m==="polygon" ? "사각형 — 지도를 끌어서 그리세요"
+       : m==="free"    ? "자유선 — 펜처럼 지도 위를 그으세요"
        : "메모 그리기를 껐습니다");
   memoRender();
 }
@@ -646,7 +648,25 @@ function memoFinishTwoPoint(){
      끌어서 크기를 보며 그리는 게 사람이 기대하는 동작이다.
    ★끄는 동안 지도가 같이 밀리면 안 되므로 dragPan 을 잠근다(모드에서 나가면 되돌린다).
    ★마우스와 터치를 같이 받는다 — 폰이 주 사용처다. */
-let rectStart=null;
+let rectStart=null, freePts=null;
+/* ── 자유선(펜) ──────────────────────────────────────────────────────────────
+   끄는 동안 지나간 자리를 그대로 잇는다. 손이 흔들리는 만큼 점이 쏟아지므로
+   ★화면에서 2픽셀 이상 움직였을 때만 점을 남긴다 — 안 그러면 한 획에 수천 점이 쌓여
+     저장소를 잡아먹고 그리는 것도 느려진다. 화면 기준이라 줌이 달라도 밀도가 같다. */
+const FREE_MAX = 3000;                       // 한 획 상한(그래도 넘치면 거기서 멈춘다)
+function freePreview(){
+  const src=map.getSource("draft"); if(!src) return;
+  src.setData({type:"FeatureCollection", features: (freePts && freePts.length>1)
+    ? [{type:"Feature",properties:{},geometry:{type:"LineString",coordinates:freePts}}] : []});
+}
+function freePush(c){
+  if(!freePts) return;
+  if(freePts.length >= FREE_MAX) return;
+  const last=freePts[freePts.length-1];
+  const dpp=360/(256*Math.pow(2, map.getZoom()));      // 경도 1픽셀에 해당하는 도
+  if(last && Math.abs(c[0]-last[0]) < 2*dpp && Math.abs(c[1]-last[1]) < 2*dpp) return;
+  freePts.push(c);
+}
 function rectPreview(a,b){
   const src=map.getSource("draft"); if(!src) return;
   src.setData({type:"FeatureCollection", features: (a&&b)
@@ -659,18 +679,42 @@ function rectPt(ev){
   return [+ll.lng.toFixed(6), +ll.lat.toFixed(6)];
 }
 function rectDown(ev){
-  if(memoMode()!=="polygon") return;
+  const m=memoMode();
+  if(m==="free"){
+    ev.preventDefault();
+    freePts=[rectPt(ev)]; freePreview();
+    status("그으세요 — 손을 떼면 끝납니다");
+    return;
+  }
+  if(m!=="polygon") return;
   ev.preventDefault();
   rectStart=rectPt(ev); rectPreview(null,null);
   status("끌어서 크기를 정하고 손을 떼세요");
 }
 function rectMove(ev){
-  if(memoMode()!=="polygon" || !rectStart) return;
+  const m=memoMode();
+  if(m==="free"){
+    if(!freePts) return;
+    ev.preventDefault();
+    freePush(rectPt(ev)); freePreview();
+    return;
+  }
+  if(m!=="polygon" || !rectStart) return;
   ev.preventDefault();
   rectPreview(rectStart, rectPt(ev));
 }
 function rectUp(ev){
-  if(memoMode()!=="polygon" || !rectStart) return;
+  const m=memoMode();
+  if(m==="free"){
+    if(!freePts) return;
+    freePush(rectPt(ev));
+    const pts=freePts; freePts=null; freePreview();
+    if(pts.length < 2){ status("너무 짧습니다 — 지도 위를 그어 주세요", true); return; }
+    memoAdd({type:"LineString", coordinates:pts});
+    status(`자유선을 그렸습니다 (${pts.length}점) — 메모를 적으세요`);
+    return;
+  }
+  if(m!=="polygon" || !rectStart) return;
   const a=rectStart, b=rectPt(ev);
   rectStart=null; rectPreview(null,null);
   if(Math.abs(a[0]-b[0])<1e-6 && Math.abs(a[1]-b[1])<1e-6){
@@ -749,7 +793,7 @@ map.on("click",(e)=>{
     status(`점을 찍었습니다 (${c[1].toFixed(5)}, ${c[0].toFixed(5)}) — 메모를 적으세요`);
     return;
   }
-  if(m==="polygon") return;                // 사각형은 드래그로 그린다(아래 핸들러)
+  if(m==="polygon" || m==="free") return;  // 사각형·자유선은 끌어서 그린다(아래 핸들러)
   drawPts.push(c);
   if(!memoFinishTwoPoint()){               // 두 점이 되면 바로 선이 된다
     draftRender();

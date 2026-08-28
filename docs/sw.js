@@ -25,7 +25,7 @@
      앱   — 페이지·도로·경계 (약 5.6MB). 내용이 바뀌면 판이 올라가 **항상 최신**이 된다.
      타일 — 배경지도 79MB. 목록(manifest)이 바뀔 때만 판이 올라간다.
    두 판 모두 build_static.py 가 **내용 해시로** 박는다(사람이 올리면 잊는다). */
-const VERSION = "a3d2baf7e9";          // 앱·데이터 내용 해시
+const VERSION = "20b46146d0";          // 앱·데이터 내용 해시
 const TILEVER = "74d224873d";          // 배경지도 목록 해시
 const CACHE = "fieldmap-app-" + VERSION;
 const TILES = "fieldmap-tiles-" + TILEVER;

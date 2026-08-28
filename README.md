@@ -8,7 +8,7 @@
 | ② 배경지도 선택 | 일반(OSM) · 브이월드 · 위성(+지명) · 지형(선택) |
 | ③ 도로(중심선) | `terrain.road_line` 을 연구지역만 잘라 **파일 하나**(GeoJSON)로. 줌 제한 없음. 버튼 하나가 **100%→70%→40%→끔** 순환(기본 70%) |
 | ④ GPS 현위치 | 정확도 원 + 따라가기. 버튼이 **세 갈래** — 꺼짐→켬 / 놓침→**현위치로 돌아가기** / 따라가는 중→끔 |
-| ⑤ 메모 | **점 · 선(두 점) · 사각형(드래그)** 을 그리고 글을 남긴다 — **이 기기에만** 저장(localStorage) · 전체 삭제(두 번 눌러야·되돌리기) · GeoJSON 내보내기 |
+| ⑤ 메모 | **점 · 선(두 점) · 사각형(드래그) · 자유선(펜처럼 긋기)** 을 그리고 글을 남긴다 — **이 기기에만** 저장(localStorage) · 전체 삭제(두 번 눌러야·되돌리기) · GeoJSON 내보내기 |
 | ⑥ 오프라인 | `⬇ 오프라인` 한 번이면 **인터넷 없이** 쓴다 — 배경지도 5,892장(79MB)까지 저장 |
 
 보여줄 연구지역은 굽기 옵션으로 정한다: `--aoi "인제 훈련"` (기본값).
@@ -211,6 +211,7 @@ field-map/
   tools/check.py          점검 하네스 (정적 79 · 서버 모드)
   tools/memo_behavior.py  메모 저장·삭제·되돌리기를 **실행으로** 확인 (11)
   tools/gps_behavior.py   현위치 버튼의 세 갈래를 **실행으로** 확인 (16)
+  tools/draw_behavior.py  사각형 드래그·자유선 솎아내기를 **실행으로** 확인 (15)
   .env.example            DB_URL · ALLOWED_ORIGINS
 ```
 
@@ -223,4 +224,5 @@ python tools/check.py                 # 서버 모드
 python tools/check.py --static docs   # 구운 번들 (85)
 python tools/memo_behavior.py         # 메모 저장·삭제·되돌리기를 실행으로 확인 (11)
 python tools/gps_behavior.py          # 현위치 버튼 세 갈래를 실행으로 확인 (16)
+python tools/draw_behavior.py         # 사각형·자유선 그리기를 실행으로 확인 (15)
 ```
