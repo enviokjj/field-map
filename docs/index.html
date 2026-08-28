@@ -222,18 +222,17 @@ const ROAD_COLOR  = "#FF2D95";      // 도로 중심선
    경계가 사라졌다. 어두운 테두리는 밝은 배경에서 선을 떼어 주고, 어두운 위성에서는
    마젠타 자체가 충분히 밝아 문제가 없다. */
 const ROAD_CASING = "#1A1030";      // 테두리
-let ROAD_MINZ = 12;                 // /tiles/layers 에서 덮어쓴다(사본을 여기 고정하지 않는다)
 let roadOn = false;
 function roadLayers(){
   return [
-    {id:"road-case", type:"line", source:"road", "source-layer":"road_line", minzoom:ROAD_MINZ,
+    {id:"road-case", type:"line", source:"road",
      paint:{"line-color":ROAD_CASING,"line-opacity":0.5,
             "line-width":["interpolate",["linear"],["zoom"],12,4.2,17,9.5,22,15.0]}},
-    {id:"road-line", type:"line", source:"road", "source-layer":"road_line", minzoom:ROAD_MINZ,
+    {id:"road-line", type:"line", source:"road",
      layout:{"line-cap":"round","line-join":"round"},
      paint:{"line-color":ROAD_COLOR,"line-opacity":1.0,
             "line-width":["interpolate",["linear"],["zoom"],12,2.0,17,5.5,22,9.0]}},
-    {id:"road-name", type:"symbol", source:"road", "source-layer":"road_line", minzoom:14,
+    {id:"road-name", type:"symbol", source:"road", minzoom:14,
      filter:["all",["has","name"],["!=",["get","name"],""]],
      layout:{"symbol-placement":"line","text-field":["get","name"],
              "text-font":["Noto Sans Regular"],"text-size":11,"symbol-spacing":180},
@@ -255,11 +254,12 @@ function roadApply(){
     return;
   }
   if(!map.getSource("road"))
-    // maxzoom:18 = 10m 축척(z19~20)까지 실제 데이터로 버틴다. 그 위는 18 타일을 확대해 쓴다.
-    //   ★확대해 써도 손실은 없다 — MVT 는 타일당 4096 격자라 z18 이면 이미 0.15m 급이다.
-    //     굽는 줌을 더 올리는 건 파일 수만 4배씩 늘릴 뿐이다.
-    map.addSource("road",{type:"vector", tiles:[api("/tiles/road_line/{z}/{x}/{y}.pbf")],
-                          minzoom:ROAD_MINZ, maxzoom:18});
+    /* ★도로는 **파일 하나**다(타일 피라미드가 아니다). 연구지역 안 도로가
+       11,442개 선뿐이라 쪼갤 이유가 없었다 — 실측:
+         타일 11,631파일 5.2MB · z12~18 **밖은 빈 화면**
+         한 파일 4.64MB(전송 gzip 0.79MB) · **줌 제한 없음**
+       그래서 레이어에 minzoom 을 안 건다. 아무리 확대·축소해도 도로가 있다. */
+    map.addSource("road",{type:"geojson", data:api("/roads.geojson")});
   roadLayers().forEach(L=>{ if(!map.getLayer(L.id)) map.addLayer(L); });
   roadOn=true; btn.classList.add("on"); btn.textContent="도로";   // ★%는 버튼에 안 쓴다(요청) — 바꿀 때 안내만
   if(map.getLayer("road-line")) map.setPaintProperty("road-line","line-opacity", op);
@@ -270,10 +270,7 @@ function roadToggle(){
   roadStep = (roadStep + 1) % ROAD_STEPS.length;
   roadApply();
   const op = ROAD_STEPS[roadStep];
-  status(op === 0 ? "도로를 껐습니다"
-    : (map.getZoom() < ROAD_MINZ
-        ? `도로 ${Math.round(op*100)}% — 🔍 z${ROAD_MINZ} 이상으로 확대해야 보입니다`
-        : `도로 ${Math.round(op*100)}%`));
+  status(op === 0 ? "도로를 껐습니다" : `도로 ${Math.round(op*100)}%`);
 }
 document.getElementById("btnRoad").onclick=roadToggle;
 { const b=document.getElementById("btnAoi"); if(b) b.onclick=aoiGo; }
@@ -783,17 +780,8 @@ map.on("mousemove",(e)=>{
   document.getElementById("coord").textContent =
     `${e.lngLat.lat.toFixed(5)}, ${e.lngLat.lng.toFixed(5)}  ·  z${map.getZoom().toFixed(1)}`;
 });
-map.on("zoomend",()=>{
-  if(roadOn && map.getZoom() < ROAD_MINZ)
-    status(`🔍 도로는 z${ROAD_MINZ} 이상에서 보입니다 (지금 z${map.getZoom().toFixed(1)})`);
-});
 map.once("load", async ()=>{
   setBasemap(curBm);
-  try{                                   // minzoom 은 서버가 알려 준다(사본을 고정하지 않는다)
-    const t=await fetchJson("/tiles/layers");
-    const r=(t.layers||[]).find(l=>l.layer==="road_line");
-    if(r && r.minzoom) ROAD_MINZ=r.minzoom;
-  }catch(e){ /* 못 받으면 기본값 12 */ }
   const aoiBounds = await aoiLoad();
   await riLoad(aoiBounds);
   roadStep = 1; roadApply();             // 도로는 켠 채로 시작(기본 70% — 30% 투명)

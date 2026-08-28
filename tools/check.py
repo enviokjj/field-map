@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import pathlib
 import re
@@ -347,10 +348,12 @@ def main(argv=None):
         #   maplibre 가 치환을 못 하고 **도로가 통째로 사라진다**(실제로 그렇게 됐다).
         _check(res, "타일 템플릿을 URL 생성자에 넣지 않는다", "new URL(" not in code,
                "{z} 가 %7Bz%7D 로 인코딩된다")
-        _check(res, "타일 템플릿의 중괄호가 살아 있다",
+        _check(res, "글리프 주소의 중괄호가 살아 있다",
                # ★`html` 이 아니라 `code` 로 본다 — 왜 안 되는지 적어 둔 주석의 `%7B` 에
                #   검사가 스스로 걸린다(같은 실수를 두 번 했다).
-               "/tiles/road_line/{z}/{x}/{y}.pbf" in code and "%7B" not in code,
+               # ★도로가 파일 하나가 되면서 `{z}/{x}/{y}` 는 사라졌지만, **글리프 주소에는
+               #   여전히 중괄호가 있다** — 인코딩되면 한글 라벨이 통째로 안 뜬다.
+               "/fonts/{fontstack}/{range}.pbf" in code and "%7B" not in code,
                "치환되지 않으면 없는 주소를 친다")
         from urllib.parse import urljoin
         for base_url, want in (("https://x.github.io/field-map/", "https://x.github.io/field-map/tiles/layers"),
@@ -370,21 +373,22 @@ def main(argv=None):
         _check(res, "글리프 팩 서빙", st == 200 and len(body) > 50_000,
                f"{len(body):,}B" if st == 200 else f"HTTP {st}")
 
-        print("\n④ 타일")
-        st, cat = _get(base, "/tiles/layers")
-        minz = None
-        if st == 200 and cat:
-            r = next((l for l in cat.get("layers", []) if l["layer"] == "road_line"), None)
-            minz = r and r.get("minzoom")
-        _check(res, "/tiles/layers", st == 200 and minz is not None, f"road_line minzoom={minz}")
-        _check(res, "minzoom 이 12 이상", (minz or 0) >= 12,
-               "z11 은 한 타일 1.28MB 인데다 행 상한에 걸려 잘린다")
-        tp = find_tile(base, static_dir)
-        st, data = _get(base, tp, raw=True) if tp else (0, b"")
-        ok = st == 200 and isinstance(data, bytes) and len(data) > 100
-        lays = mvt_layers(data) if ok else []
-        _check(res, "타일이 유효한 MVT", ok and lays and lays[0][0] == "road_line",
-               f"{tp} · {len(data):,}B · {lays}" if ok else f"HTTP {st} {tp}")
+        print("\n④ 도로 (파일 하나)")
+        # ★타일 피라미드에서 **파일 하나**로 바꿨다. 연구지역 안 도로가 11,442개 선뿐이라
+        #   쪼갤 이유가 없었다: 타일 11,631파일 5.2MB·z12~18 밖은 빈 화면
+        #   → 한 파일 4.64MB(gzip 0.79MB)·줌 제한 없음. 그래서 minzoom 검사도 없앴다.
+        st, gj = _get(base, "/roads.geojson")
+        rf = (gj or {}).get("features", []) if st == 200 else []
+        _check(res, "/roads.geojson", st == 200 and len(rf) > 1000,
+               f"{len(rf):,}개 선" if st == 200 else f"HTTP {st}")
+        kinds = sorted({f["geometry"]["type"] for f in rf}) if rf else []
+        _check(res, "전부 선 도형", bool(kinds) and set(kinds) <= {"LineString", "MultiLineString"},
+               f"{kinds} — 점이 섞이면 ST_Intersection 결과를 안 거른 것이다")
+        _check(res, "도로에 줌 하한이 없다",
+               "ROAD_MINZ" not in code and 'source:"road", "source-layer"' not in code,
+               "minzoom 을 걸면 그 아래에서 도로가 사라진다 — 한 파일이라 걸 이유가 없다")
+        _check(res, "도로 소스가 geojson", 'type:"geojson", data:api("/roads.geojson")' in code,
+               "벡터 타일 소스가 남아 있으면 없는 타일을 친다")
 
         print("\n⑤ 연구지역(AOI) · 리")
         st, gj = _get(base, "/aoi/items")
@@ -435,22 +439,26 @@ def main(argv=None):
         print("\n⑦b 굽는 범위 · 메모")
         # ★구운 타일이 실제로 **연구지역 범위**에 있는지 본다 — 시군구 전체를 구우면
         #   17배를 낭비하고, 엉뚱한 곳을 구우면 현장에서 도로가 안 나온다.
-        if static_dir and feats:
-            import math as _m
+        if static_dir and feats and rf:
+            # ★구운 도로가 실제로 **연구지역 안**인지 본다. 엉뚱한 곳을 구우면
+            #   현장에서 도로가 안 나오고, 넓게 구우면 파일만 커진다.
             xs = [c[0] for f in feats for r in f["geometry"]["coordinates"] for c in r]
             ys = [c[1] for f in feats for r in f["geometry"]["coordinates"] for c in r]
-            zdir = static_dir / "tiles" / "road_line" / "12"
-            txs = sorted(int(d.name) for d in zdir.iterdir()) if zdir.is_dir() else []
-            def lon2x(lon, z=12):
-                return int((lon + 180) / 360 * (1 << z))
-            want = (lon2x(min(xs)), lon2x(max(xs)))
-            ok = bool(txs) and txs[0] >= want[0] - 1 and txs[-1] <= want[1] + 1
-            _check(res, "타일이 연구지역 범위 안", ok,
-                   f"z12 x {txs[0] if txs else '-'}~{txs[-1] if txs else '-'} vs AOI {want[0]}~{want[1]}")
-            n_tiles = sum(1 for _ in (static_dir / "tiles").rglob("*.pbf"))
+            def flat(g):
+                cs = g["coordinates"]
+                return cs if g["type"] == "LineString" else [c for part in cs for c in part]
+            rx = [c[0] for f in rf for c in flat(f["geometry"])]
+            ry = [c[1] for f in rf for c in flat(f["geometry"])]
+            eps = 1e-4                                   # ≈11m — 자른 경계의 반올림 여유
+            ok = (min(rx) >= min(xs)-eps and max(rx) <= max(xs)+eps
+                  and min(ry) >= min(ys)-eps and max(ry) <= max(ys)+eps)
+            _check(res, "도로가 연구지역 범위 안", ok,
+                   f"도로 {min(rx):.4f}~{max(rx):.4f} vs AOI {min(xs):.4f}~{max(xs):.4f}")
+            gz = len(gzip.compress(json.dumps(gj, ensure_ascii=False).encode(), 6))
+            _check(res, "전송량이 감당할 만하다", gz < 4e6,
+                   f"gzip {gz/1e6:.2f}MB — 폰에서 한 번 받는 양이다")
+            n_tiles = 0
             mb = sum(f.stat().st_size for f in static_dir.rglob("*") if f.is_file()) / 1e6
-            # ★기준은 GitHub Pages 한도(사이트 1GB)다. z17 까지 구우면 타일이 4천을 넘는데
-            #   그건 정상이다 — 처음엔 4,000 으로 잡아 두고 스스로 걸렸다.
             _check(res, "번들이 한도 안", mb < 800, f"타일 {n_tiles:,}개 · {mb:.1f}MB")
 
         for name, tok, why in (

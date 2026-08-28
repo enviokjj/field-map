@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import math
 import os
@@ -58,6 +59,35 @@ TILE_SQL = text("""
       FROM src, env
     )
     SELECT ST_AsMVT(m,'road_line',4096,'geom') FROM m""")
+
+# ★도로는 **타일 피라미드가 아니라 파일 하나**로 굽는다.
+#   연구지역이 작아서(인제 훈련 243km²) 타일로 쪼갤 이유가 없었다 — 실측:
+#       타일  11,631 파일 5.2MB · z12~18 **밖은 빈 화면**
+#       한 파일  4.77MB (gzip 0.79MB) · **줌 제한 없음** · 굽기 0.4초
+#   벡터라 확대해도 선이 날카롭고, 줌 구간을 미리 정할 필요가 없어진다.
+#   ★넓은 범위(시군구·시도)를 담을 땐 얘기가 달라진다 — 그때는 `--tiles` 로 피라미드를
+#     굽는다. 한 파일 방식은 **연구지역 한 곳** 규모에서만 유리하다.
+ROADS_SQL = text("""
+    WITH clip AS (
+      SELECT ST_Union(fp) g FROM (
+        SELECT DISTINCT ON (a.properties->>'name') a.footprint fp
+        FROM catalog.asset a
+        WHERE a.kind='aoi_cube' AND a.properties->>'name' = ANY(:names)
+        ORDER BY a.properties->>'name', a.acquired_at DESC) t
+    ), cut AS (
+      -- ★ST_Intersection 은 스치기만 한 선에서 **점**을 낳는다. 선만 남긴다(2=LINE).
+      SELECT ST_CollectionExtract(ST_Intersection(r.geom, clip.g), 2) g,
+             nullif(btrim(coalesce(r."명칭",'')), '') name
+      FROM terrain.road_line r, clip
+      WHERE r.geom && clip.g AND ST_Intersects(r.geom, clip.g)
+    )
+    SELECT jsonb_build_object('type','FeatureCollection','features',
+             coalesce(jsonb_agg(jsonb_build_object(
+               'type','Feature',
+               'properties', jsonb_strip_nulls(jsonb_build_object('name', name)),
+               'geometry', ST_AsGeoJSON(ST_Transform(g,4326), 6)::jsonb)), '[]'::jsonb))::text,
+           count(*)
+    FROM cut WHERE g IS NOT NULL AND NOT ST_IsEmpty(g)""")
 
 
 def tile_xy(lon, lat, z):
@@ -118,6 +148,8 @@ def main(argv=None):
                     help="범위를 이만큼(도) 넓혀 굽는다 — 가장자리가 휑하지 않게")
     ap.add_argument("--aoi", default="인제 훈련",
                     help="담을 연구지역 이름(쉼표 구분). 빈 값이면 범위 안 전부")
+    ap.add_argument("--tiles", action="store_true",
+                    help="도로를 벡터 타일 피라미드로 굽는다(넓은 범위용). 기본은 파일 하나")
     ap.add_argument("--page-only", action="store_true",
                     help="페이지·폰트만 web/ → out/ 으로 복사한다. DB 불필요, 타일·경계는 그대로 둔다")
     a = ap.parse_args(argv)
@@ -189,28 +221,43 @@ def main(argv=None):
         shutil.copytree(ROOT / "web", out, dirs_exist_ok=True)
         (out / ".nojekyll").write_text("")        # GitHub Pages 가 _ 로 시작하는 경로를 안 지우게
 
-        # ── 도로 타일 ────────────────────────────────────────────────────────
-        (out / "tiles").mkdir(parents=True, exist_ok=True)
-        (out / "tiles" / "layers").write_text(json.dumps(
-            {"layers": [{"layer": "road_line", "minzoom": a.zoom[0]}], "max_zoom": 22},
-            ensure_ascii=False))
-        total_b = n_written = n_empty = 0
-        for z in range(a.zoom[0], a.zoom[1] + 1):
-            x1, y1 = tile_xy(W, N, z)
-            x2, y2 = tile_xy(E, S, z)
-            zb = zn = 0
-            for x in range(x1, x2 + 1):
-                for y in range(y1, y2 + 1):
-                    data = con.execute(TILE_SQL, {"z": z, "x": x, "y": y}).scalar()
-                    if not data:
-                        n_empty += 1
-                        continue          # ★빈 타일은 안 쓴다 — maplibre 는 404 를 빈 타일로 본다
-                    p = out / "tiles" / "road_line" / str(z) / str(x)
-                    p.mkdir(parents=True, exist_ok=True)
-                    (p / f"{y}.pbf").write_bytes(bytes(data))
-                    zb += len(data); zn += 1
-            total_b += zb; n_written += zn
-            print(f"  z{z}: {zn:>6,} 타일 {zb/1e6:>6.1f}MB  (빈 타일 제외)")
+        # ── 도로 ─────────────────────────────────────────────────────────────
+        if not a.tiles:
+            if not names:
+                raise SystemExit("--aoi 가 비었다 — 한 파일 방식은 연구지역 기준으로 자른다"
+                                 " (넓은 범위는 --tiles)")
+            js, n_road = con.execute(ROADS_SQL, {"names": names}).first()
+            (out / "roads.geojson").write_text(js, encoding="utf8")
+            raw = len(js.encode())
+            gz = len(gzip.compress(js.encode(), 6))
+            print(f"  도로 {n_road:,}개 선 → roads.geojson {raw/1e6:.2f}MB"
+                  f"  (전송 시 gzip {gz/1e6:.2f}MB)")
+            if raw > 25e6:                     # 한 파일 방식이 버거워지는 지점
+                print("  ★4MB 를 크게 넘었다 — 범위가 넓으면 --tiles 를 쓰는 편이 낫다")
+
+        # ── 도로 타일 (--tiles) ──────────────────────────────────────────────
+        if a.tiles:
+          (out / "tiles").mkdir(parents=True, exist_ok=True)
+          (out / "tiles" / "layers").write_text(json.dumps(
+              {"layers": [{"layer": "road_line", "minzoom": a.zoom[0]}], "max_zoom": 22},
+              ensure_ascii=False))
+          total_b = n_written = n_empty = 0
+          for z in range(a.zoom[0], a.zoom[1] + 1):
+              x1, y1 = tile_xy(W, N, z)
+              x2, y2 = tile_xy(E, S, z)
+              zb = zn = 0
+              for x in range(x1, x2 + 1):
+                  for y in range(y1, y2 + 1):
+                      data = con.execute(TILE_SQL, {"z": z, "x": x, "y": y}).scalar()
+                      if not data:
+                          n_empty += 1
+                          continue          # ★빈 타일은 안 쓴다 — maplibre 는 404 를 빈 타일로 본다
+                      p = out / "tiles" / "road_line" / str(z) / str(x)
+                      p.mkdir(parents=True, exist_ok=True)
+                      (p / f"{y}.pbf").write_bytes(bytes(data))
+                      zb += len(data); zn += 1
+              total_b += zb; n_written += zn
+              print(f"  z{z}: {zn:>6,} 타일 {zb/1e6:>6.1f}MB  (빈 타일 제외)")
 
         # ── 연구지역(AOI) — 서버에 실제로 등록된 것 ──────────────────────────
         #   catalog.asset(kind='aoi_cube') 의 footprint 가 그 연구지역의 범위다.
@@ -254,7 +301,8 @@ def main(argv=None):
     size = sum(f.stat().st_size for f in out.rglob("*") if f.is_file())
     files = sum(1 for f in out.rglob("*") if f.is_file())
     print(f"\n★ {out}")
-    print(f"  도로 타일 {n_written:,}개 {total_b/1e6:.1f}MB (빈 타일 {n_empty:,}개 생략)")
+    if a.tiles:
+        print(f"  도로 타일 {n_written:,}개 {total_b/1e6:.1f}MB (빈 타일 {n_empty:,}개 생략)")
     print(f"  전체 {files:,}파일 {size/1e6:.1f}MB")
     if size > 900e6:
         print("  ⚠ GitHub Pages 사이트 한도(1GB)에 근접한다 — 줌 범위나 지역을 줄일 것")

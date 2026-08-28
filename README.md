@@ -6,7 +6,7 @@
 |---|---|
 | ① 연구지역 | 서버에 등록된 AOI(`인제 훈련`)를 그대로 표시 · 리(법정리)는 z11+ 상시 |
 | ② 배경지도 선택 | 일반(OSM) · 브이월드 · 위성(+지명) · 지형(선택) |
-| ③ 도로(중심선) | `terrain.road_line` — 벡터 타일(MVT). 버튼 하나가 **100%→70%→40%→끔** 순환(기본 70%) |
+| ③ 도로(중심선) | `terrain.road_line` 을 연구지역만 잘라 **파일 하나**(GeoJSON)로. 줌 제한 없음. 버튼 하나가 **100%→70%→40%→끔** 순환(기본 70%) |
 | ④ GPS 현위치 | 정확도 원 + 따라가기 |
 | ⑤ 메모 | **점 · 선(두 점) · 사각형(대각 두 점)** 을 그리고 글을 남긴다 — **이 기기에만** 저장(localStorage) · GeoJSON 내보내기 |
 
@@ -38,24 +38,27 @@ python tools/build_static.py             # 기본: 인제군 z12~16 → docs/
 굽는 범위는 **연구지역(AOI) 자체**다(`--extent aoi`, 기본). 시군구 전체를 구우면
 17배를 낭비한다 — 인제군 0.65°×0.67° vs AOI 0.19°×0.13°.
 
-실측 (인제 훈련 AOI, z12~16):
+실측 (인제 훈련 AOI):
 
 ```
-도로 타일 1,526개 3.5MB   (빈 타일 431개 생략)
-리 29건 · AOI 1건 · 전체 1,533파일 3.7MB
+도로 11,442개 선 → roads.geojson 4.64MB   (전송 시 gzip 0.79MB)
+리 29건 · AOI 1건 · 전체 7파일 4.9MB
 ```
 
-참고 — 시군구 전체(`--extent region`)로 구우면:
+**★도로는 타일이 아니라 파일 하나다.** 종전엔 z12~18 피라미드를 구웠는데, 실측하고
+바꿨다 — 연구지역 규모에서는 쪼갤 이유가 없었다:
 
 ```
-z12    68 타일  5.2MB      시도     16건 0.54MB (전국)
-z13   230 타일  5.0MB      시군구  256건 1.80MB (전국)
-z14   825 타일  5.4MB      읍면동   35건 0.18MB (지역)
-z15 2,636 타일  5.6MB      리      235건 0.58MB (지역)
-z16 7,947 타일  6.2MB      유역 3종        1.70MB
-────────────────────────────────────────────────────
-합계 11,719 파일 · 32.4MB  → docs/          (빈 타일 12,951개는 안 굽는다 — 53%)
+             파일 수     용량      줌
+타일 피라미드  11,631    5.2MB    z12~18 **밖은 빈 화면**
+파일 하나           1    4.64MB   **제한 없음**   ← 채택
 ```
+
+벡터라 아무리 확대해도 선이 날카롭고, 굽는 줌 구간을 미리 정할 필요가 없어졌다.
+화면 쪽에서도 minzoom 을 안 걸어도 되니 "확대해야 보입니다" 안내 자체가 사라졌다.
+
+**★넓은 범위는 다르다.** 시군구·시도를 담으려면 `--tiles` 로 종전처럼 피라미드를
+굽는다. 파일 하나 방식은 **연구지역 한 곳** 규모에서만 유리하다.
 
 GitHub Pages 한도(사이트 1GB · 파일 100MB)에 여유롭게 들어간다.
 
@@ -85,8 +88,9 @@ pip install -r requirements.txt
 ```
 
 `server/app.py` 가 여는 것은 GET 5개뿐이다:
-`/tiles/layers` · `/tiles/{layer}/{z}/{x}/{y}.pbf` · `/boundary/layers` ·
-`/boundary/{layer}/items` · `/boundary/{layer}/features/{code}` · `/healthz`.
+`/roads.geojson` · `/aoi/items` · `/boundary/layers` · `/boundary/{layer}/items` ·
+`/boundary/{layer}/features/{code}` · `/healthz`
+(넓은 범위용 타일 경로 `/tiles/…` 도 남아 있다 — 화면은 안 쓴다).
 
 외부에 열려면 **HTTPS 종단이 앞에 있어야 한다**(GPS 때문에). nginx + Let's Encrypt 등.
 
@@ -109,16 +113,19 @@ pip install -r requirements.txt
 [vworld.kr](https://www.vworld.kr) 에 그 도메인을 등록해야 배경 타일이 온다. 등록 전에는
 브이월드·위성 배경이 통째로 비어 보인다. 키는 `web/index.html` 의 `FIELD_CFG.vworldKey`.
 
-**★도로를 GeoJSON 으로 주면 안 된다.** `terrain.road_line` 은 **1,815만 건 · 7GB** 다.
-GeoJSON 으로 화면 한 장을 주면 z13 에서 **48.96MB**(그나마 4만 건에서 잘린 값)·2.13s 다.
-같은 화면이 MVT 로는 **85KB · 10ms**.
+**★"도로는 GeoJSON 으로 주면 안 된다"는 범위에 달렸다.** `terrain.road_line` 은
+**1,815만 건 · 7GB** 라 넓은 범위를 GeoJSON 으로 주면 죽는다 — z13 화면 한 장이
+**48.96MB**(그나마 4만 건에서 잘린 값)·2.13s 였다(같은 화면이 MVT 로는 85KB·10ms).
+**그러나 연구지역 하나로 자르면 4.64MB(gzip 0.79MB)·11,442개 선뿐**이라 파일 하나가
+낫다. 경계선은 '데이터가 벡터냐'가 아니라 **얼마나 잘랐느냐**다.
 
 **★타일 질의는 인덱스가 사는 방향으로.** `ST_Transform(r.geom, 3857) && env` 로 쓰면
 왼쪽에 함수가 걸려 5186 GIST 인덱스를 못 쓴다 — z13 한 타일에 **5.2초**가 걸렸다.
 **타일 봉투를 5186 으로 뒤집으면** 33ms 다(157배).
 
-**★z11 은 안 준다.** 한 타일이 1.28MB 인데다 행 상한 60,000 에 걸려 **잘린다**.
-잘린 도로망은 '틀린 지도'라 아예 안 주는 편이 낫다(`minzoom: 12`).
+**★z11 은 안 준다** (타일 경로 `--tiles`·서버 모드에 한한 이야기). 한 타일이 1.28MB
+인데다 행 상한 60,000 에 걸려 **잘린다**. 잘린 도로망은 '틀린 지도'라 아예 안 주는
+편이 낫다(`minzoom: 12`). 파일 하나 방식에는 해당 없다 — 이미 잘라서 굽는다.
 
 **★`glyphs` 는 `style` 안에 넣어야 한다.** maplibre 는 `style.glyphs` 만 읽는다.
 Map 생성자 옵션에 두면 조용히 무시되고, 숫자가 섞인 라벨 하나 때문에 **그 타일의 심볼 전체가
@@ -139,7 +146,7 @@ Map 생성자 옵션에 두면 조용히 무시되고, 숫자가 섞인 라벨 �
 field-map/
   web/index.html          페이지 전부(HTML+CSS+JS 한 파일) · FIELD_CFG 로 설정
   web/fonts/              라벨 글리프 0-255 (77KB)
-  server/app.py           미니 게이트웨이 — 읽기 전용 GET 만
+  server/app.py           미니 게이트웨이 — 읽기 전용 GET 만 (/roads.geojson 포함)
   tools/build_static.py   정적 번들 굽기 → docs/  (Pages 가 서빙하는 폴더)
   tools/check.py          점검 하네스
   .env.example            DB_URL · ALLOWED_ORIGINS
@@ -152,4 +159,5 @@ DB 는 두 테이블만 읽는다: `terrain.road_line`(도로) · `terrain.bound
 ```bash
 python tools/check.py                 # 서버 모드
 python tools/check.py --static docs   # 구운 번들
+python tools/memo_behavior.py         # 메모 저장·삭제·되돌리기를 실행으로 확인
 ```

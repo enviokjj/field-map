@@ -11,14 +11,19 @@
 DB 의존
 -------
 PostGIS 두 테이블만 읽는다.
-  terrain.road_line   도로 중심선 1,815만 건 (도로 타일)
+  terrain.road_line   도로 중심선 1,815만 건 (연구지역만 잘라 /roads.geojson)
   terrain.boundary    경계 색인 21,488건 (연구지역 선택 — 표시용 간이화 도형)
 DB 가 없는 환경에 옮기려면 README 의 '오프라인 패키징' 절을 볼 것.
 
-★도로를 GeoJSON 으로 주지 않는 이유
------------------------------------
-`road_line` 은 1,815만 건 7GB 다. GeoJSON 으로 화면 한 장을 주면 z13 에서 **48.96MB**
-(그나마 4만 건에서 잘린 값)·2.13s 다. 같은 화면이 **MVT 로는 85KB · 10ms** 다.
+★도로를 어떻게 주는가 — 자른 범위에 달렸다
+------------------------------------------
+`road_line` 은 1,815만 건 7GB 라 **넓은 범위를 GeoJSON 으로 주면 죽는다**: z13 화면 한 장이
+48.96MB(4만 건에서 잘린 값)·2.13s 였다(같은 화면이 MVT 로는 85KB·10ms).
+
+**그러나 연구지역 하나로 자르면 얘기가 뒤집힌다.** 인제 훈련 AOI(243km²) 안 도로는
+11,442개 선뿐이라 GeoJSON 4.64MB(전송 gzip 0.79MB)·질의 0.4초다. 타일로 쪼개면
+11,631파일 5.2MB 인데 z12~18 **밖은 빈 화면**이 된다. 그래서 화면이 쓰는 것은
+`/roads.geojson` **하나**이고, 타일 경로는 넓은 범위를 담을 때를 위해 남겨 둔다.
 
 ★타일 질의는 인덱스가 사는 방향으로 써야 한다
 ---------------------------------------------
@@ -257,6 +262,47 @@ def aoi_items(names: str = Query("인제 훈련", description="연구지역 이�
     with engine.connect() as con:
         return Response(content=con.execute(sql, params).scalar(),
                         media_type="application/geo+json")
+
+
+@app.get("/roads.geojson", tags=["도로"])
+def roads_geojson(names: str = Query("인제 훈련", description="연구지역 이름(쉼표 구분)")):
+    """연구지역 안 **도로 중심선 전부를 한 파일**로 준다.
+
+    ★타일이 아니라 파일 하나인 이유 — 연구지역 규모에서는 쪼갤 이유가 없다. 실측:
+        타일   11,631파일 5.2MB · z12~18 **밖은 빈 화면**
+        한 파일 4.64MB(전송 gzip 0.79MB) · **줌 제한 없음** · 질의 0.4초
+      화면 쪽도 minzoom 을 안 걸어도 되니 "확대해야 보입니다" 안내 자체가 없어진다.
+    ★넓은 범위(시군구·시도)라면 얘기가 다르다 — 그때는 /tiles/… 를 쓴다.
+      1,815만 건을 통째로 주는 길은 없다(z13 한 화면이 GeoJSON 으로 48.96MB 였다).
+    """
+    nm = [x.strip() for x in names.split(",") if x.strip()]
+    if not nm:
+        raise HTTPException(400, "names 가 필요하다 — 연구지역 없이 도로 전부는 못 준다")
+    sql = text("""
+        WITH clip AS (
+          SELECT ST_Union(fp) g FROM (
+            SELECT DISTINCT ON (a.properties->>'name') a.footprint fp
+            FROM catalog.asset a
+            WHERE a.kind='aoi_cube' AND a.properties->>'name' = ANY(:names)
+            ORDER BY a.properties->>'name', a.acquired_at DESC) t
+        ), cut AS (
+          -- ★ST_Intersection 은 스치기만 한 선에서 **점**을 낳는다. 선만 남긴다(2=LINE).
+          SELECT ST_CollectionExtract(ST_Intersection(r.geom, clip.g), 2) g,
+                 nullif(btrim(coalesce(r."명칭",'')), '') name
+          FROM terrain.road_line r, clip
+          WHERE r.geom && clip.g AND ST_Intersects(r.geom, clip.g)
+        )
+        SELECT jsonb_build_object('type','FeatureCollection','features',
+                 coalesce(jsonb_agg(jsonb_build_object(
+                   'type','Feature',
+                   'properties', jsonb_strip_nulls(jsonb_build_object('name', name)),
+                   'geometry', ST_AsGeoJSON(ST_Transform(g,4326), 6)::jsonb)), '[]'::jsonb))::text
+        FROM cut WHERE g IS NOT NULL AND NOT ST_IsEmpty(g)""")
+    with engine.connect() as con:
+        body = con.execute(sql, {"names": nm}).scalar()
+    if not body:
+        raise HTTPException(404, f"연구지역을 못 찾았다: {nm}")
+    return Response(content=body, media_type="application/geo+json")
 
 
 @app.get("/healthz", tags=["운영"])
