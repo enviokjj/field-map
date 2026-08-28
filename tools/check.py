@@ -491,13 +491,15 @@ def main(argv=None):
         _check(res, "점은 누르는 즉시 찍힌다", "memoAdd(" in code,
                "글은 그다음에 적는다 — 안 적어도 점은 남는다")
 
-        print("\n⑦c 도로 투명도")
-        st_ = _re2.search(r"const ROAD_STEPS = \[([^\]]*)\]", html)
-        vals = [v.strip() for v in st_.group(1).split(",")] if st_ else []
-        _check(res, "투명도 단계 제공", len(vals) >= 3 and "0" in vals,
-               f"{vals} (0=끔)" if vals else "없음")
-        _check(res, "기본이 반투명", "roadStep = 1" in html,
-               "100% 는 영상을 가린다 — 70%(30% 투명)로 시작")
+        print("\n⑦c 도로 투명도 · 켜기끄기")
+        # ★버튼은 **켜고 끄기만** 한다(요청). 종전엔 100%→70%→40%→끔 을 돌아
+        #   현장에서 지금 몇 번째인지 세게 만들었다. 투명도는 30% 고정.
+        m_op = _re2.search(r"const ROAD_OPACITY = ([0-9.]+)", html)
+        _check(res, "투명도 30% 고정", bool(m_op) and abs(float(m_op.group(1)) - 0.7) < 1e-9,
+               f"ROAD_OPACITY={m_op.group(1) if m_op else '없음'} (0.7 = 30% 투명)")
+        _check(res, "단계 순환을 없앴다", "ROAD_STEPS" not in html,
+               "단계가 남아 있으면 버튼이 또 여러 상태를 돈다")
+        _check(res, "켠 채로 시작", "roadStep = 1" in html, "100% 는 영상을 가린다")
         _check(res, "투명도를 실제로 반영", 'setPaintProperty("road-line","line-opacity"' in html)
 
         print("\n⑧ 모바일·태블릿")
@@ -538,6 +540,61 @@ def main(argv=None):
                "안 막으면 '눌러도 아무 반응이 없다'가 된다")
         _check(res, "권한 거부·타임아웃을 구분해 알린다",
                "err.code===1" in html and "err.code===2" in html)
+
+        print("\n⑩ 오프라인 (인터넷 없이 쓰기)")
+        # ★첫 번째 벽은 배경지도가 아니라 **지도 라이브러리**였다 — CDN 에서 받아오니
+        #   인터넷이 없으면 페이지가 아예 안 떴다. 번들에 넣은 것을 굳힌다.
+        _check(res, "지도 라이브러리를 번들에서 읽는다",
+               'src="vendor/maplibre-gl.js"' in html and "unpkg.com" not in html,
+               "CDN 이면 인터넷 없이 페이지가 아예 안 뜬다")
+        st, body = _get(base, "/vendor/maplibre-gl.js", raw=True)
+        _check(res, "라이브러리 서빙", st == 200 and len(body) > 500_000,
+               f"{len(body):,}B" if st == 200 else f"HTTP {st}")
+        _check(res, "서비스 워커를 등록한다", 'register(PAGE_DIR + "/sw.js")' in code,
+               "없으면 캐시가 10분(max-age=600)짜리라 새로고침하면 죽는다")
+        st, sw = _get(base, "/sw.js", raw=True)
+        swt = sw.decode("utf8", "replace") if st == 200 else ""
+        _check(res, "서비스 워커 서빙", st == 200 and "fieldmap-" in swt,
+               f"{len(sw):,}B" if st == 200 else f"HTTP {st}")
+        # ★판 번호를 안 박으면 브라우저가 옛 파일을 계속 내준다(캐시 이름이 그대로다).
+        _check(res, "서비스 워커 판 번호가 박혔다", "__VERSION__" not in swt,
+               "굽는 쪽(build_static.stamp_sw)이 자동으로 박는다 — 사람이 하면 잊는다")
+        _check(res, "우리 파일은 캐시 먼저", "caches.open(CACHE)" in swt and "c.match(req)" in swt)
+        _check(res, "배경지도 원본은 네트워크 먼저", 'url.hostname === "api.vworld.kr"' in swt,
+               "온라인에서는 최신을 쓰고, 끊기면 캐시로 떨어진다")
+        _check(res, "오프라인 준비 버튼", 'id="btnOffline"' in html and "BAKE" in code,
+               "79MB 를 첫 방문에 조용히 끌어가지 않는다 — 누를 때 받는다")
+
+        if static_dir:
+            man = static_dir / "basemap" / "manifest.json"
+            mj = json.loads(man.read_text(encoding="utf8")) if man.is_file() else {}
+            n_bm = len(mj.get("tiles", []))
+            _check(res, "배경지도가 번들에 있다", n_bm > 3000,
+                   f"{n_bm:,}장 · {mj.get('bytes',0)/1e6:.0f}MB · z{mj.get('zoom')}")
+            real = sum(1 for _ in (static_dir / "basemap").rglob("*")
+                       if _.is_file() and _.suffix in (".png", ".jpeg"))
+            _check(res, "목록과 실제 파일이 맞는다", real == n_bm - (1 if n_bm else 0) or real == n_bm,
+                   f"목록 {n_bm:,} vs 실제 {real:,}")
+            _check(res, "배경지도를 번들에서 읽는다",
+                   'bmLocal("Base","png")' in code and "LOCAL_BM_MAXZ" in code,
+                   "원격만 보면 인터넷이 끊길 때 배경이 통째로 회색이 된다")
+            _check(res, "z16 위는 원본을 겹친다", 'id:"basemap-hi"' in code,
+                   "온라인에선 선명하게, 오프라인에선 그 겹침만 실패하고 배경은 남는다")
+
+        print("\n⑪ 폰·태블릿 크기 조정")
+        # ★종전엔 12px/14px 두 단계뿐이라 폰에선 작고 큰 태블릿에선 화면에 비해 더 작았다.
+        for name, tok, why in (("글자 크기가 연속적", "--ui:   clamp(", "폰 14px ~ 태블릿 16px"),
+                               ("손가락 목표 높이", "--tap:  clamp(", "40 ~ 48px"),
+                               ("현위치 버튼도 비례", "--fab:  clamp(", "54 ~ 68px"),
+                               ("iOS 자동확대 차단", "text-size-adjust:100%", "돌릴 때 글자가 들쭉날쭉해진다")):
+            _check(res, name, tok in html, why)
+        # ★버튼이 폰 폭을 넘어 **오른쪽으로 밀려 안 보이던** 것 — 줄을 바꿔 전부 보이게 한다.
+        # ★검사가 **제 주석에 스스로 걸렸다**(세 번째다 — glyphs·%7B 에 이어).
+        #   "종전엔 nowrap 이었다"고 적어 둔 CSS 주석이 검사어와 같았다. 주석을 걷고 본다.
+        css = _re2.sub(r"/\*.*?\*/", " ", html, flags=_re2.S).replace(" ", "")
+        _check(res, "좁은 화면에서 버튼이 줄바꿈",
+               "flex-wrap:wrap" in css and "flex-wrap:nowrap" not in css,
+               "가로 스크롤이면 버튼이 있는지조차 모른다")
     finally:
         if proc:
             proc.terminate()

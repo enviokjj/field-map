@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import json
 import math
 import os
@@ -135,6 +136,24 @@ def boundary_items(con, layer, bbox=None):
           {where}) s"""), params).scalar()
 
 
+def stamp_sw(out):
+    """서비스 워커에 **판 번호**를 박는다.
+
+    ★안 박으면 브라우저가 옛 파일을 계속 내준다 — 캐시 이름이 그대로라 새로 안 받는다.
+      사람이 손으로 올리는 방식은 **잊는다**(원 저장소에서 캐시버스팅을 잊어 기능이
+      통째로 안 보였던 적이 있다). 그래서 굽는 쪽이 자동으로 박는다.
+    번호 = index.html + sw.js 내용의 해시. 내용이 같으면 번호도 같아 헛되이 안 지운다.
+    """
+    sw = out / "sw.js"
+    if not sw.is_file():
+        return None
+    body = sw.read_text(encoding="utf8")
+    idx = (out / "index.html").read_bytes() if (out / "index.html").is_file() else b""
+    ver = hashlib.sha256(idx + body.replace("__VERSION__", "").encode()).hexdigest()[:10]
+    sw.write_text(body.replace("__VERSION__", ver), encoding="utf8")
+    return ver
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="정적 번들 굽기")
     ap.add_argument("--region", default="adm_sigungu:5181000000", help="layer:code (기본 인제군)")
@@ -173,7 +192,9 @@ def main(argv=None):
             shutil.copy2(src, dst)
             if not same:
                 changed.append(str(dst.relative_to(out)))
-        print(f"페이지 복사 → {out}")
+        ver = stamp_sw(out)
+        print(f"페이지 복사 → {out}"
+              + (f"  (서비스 워커 판 {ver})" if ver else ""))
         for c in changed:
             print(f"  갱신: {c}")
         if not changed:
@@ -187,9 +208,21 @@ def main(argv=None):
     eng = create_engine(db)
     layer, _, code = a.region.partition(":")
     out = (ROOT / a.out).resolve()
+    # ★배경지도 타일(79MB)은 **살려 둔다**. 전체를 지우면 5,892장을 다시 받아야 하고
+    #   그건 굽기와 무관한 손실이다(bake_basemap.py 가 따로 관리한다).
+    keep = out / "basemap"
+    stash = None
+    if keep.is_dir():
+        stash = out.parent / (out.name + ".basemap.keep")
+        if stash.exists():
+            shutil.rmtree(stash)
+        shutil.move(str(keep), str(stash))
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
+    if stash:
+        shutil.move(str(stash), str(keep))
+        print(f"  배경지도 {sum(1 for _ in keep.rglob('*') if _.is_file()):,}장 보존")
 
     with eng.connect() as con:
         # ★굽는 범위 = **연구지역(AOI) 자체**. 종전엔 시군구 전체를 구웠는데
@@ -298,6 +331,9 @@ def main(argv=None):
         bnd_b = len(gj.encode())
         print(f"  리 {len(json.loads(gj)['features']):,}건 {bnd_b/1e6:.2f}MB (지역)")
 
+    ver = stamp_sw(out)
+    if ver:
+        print(f"  서비스 워커 판 {ver}")
     size = sum(f.stat().st_size for f in out.rglob("*") if f.is_file())
     files = sum(1 for f in out.rglob("*") if f.is_file())
     print(f"\n★ {out}")

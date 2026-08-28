@@ -19,27 +19,42 @@
 
   설정은 아래 FIELD_CFG 한 곳에서만 바꾼다.
 -->
-<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+<!-- ★지도 라이브러리를 **번들에 넣는다**(종전엔 unpkg CDN). 인터넷이 끊기면 CDN 을
+     못 받아 **페이지가 아예 안 뜨던** 것이 오프라인의 첫 번째 벽이었다. 0.80MB. -->
+<script src="vendor/maplibre-gl.js"></script>
+<link href="vendor/maplibre-gl.css" rel="stylesheet">
 <style>
 :root{--ink:#151D2C;--muted:#697A92;--line:#DEE4EC;--surface:#fff;--raise:#EEF2F6;
-  --blue:#0B6FA4;--shadow:0 8px 28px rgba(21,29,44,.12),0 0 0 1px rgba(21,29,44,.07)}
+  --blue:#0B6FA4;--shadow:0 8px 28px rgba(21,29,44,.12),0 0 0 1px rgba(21,29,44,.07);
+  /* ★글자·버튼을 화면 폭에 따라 **연속적으로** 키운다.
+     종전엔 12px(데스크톱) / 14px(터치) 두 단계뿐이라, 폰에서는 작고 큰 태블릿에서는
+     화면에 비해 더 작아 보였다. clamp 는 그 사이를 이어 준다.
+       390px 폰   → 글자 14.0px · 버튼 높이 40px
+       820px 태블릿 → 글자 16.0px · 버튼 높이 49px→48px(상한)
+       데스크톱     → 상한에서 멈춘다 */
+  --ui:   clamp(13px, 3.6vw, 16px);      /* 버튼·라벨 글자 */
+  --ui-s: clamp(11px, 3.0vw, 14px);      /* 좌표 등 보조 글자 */
+  --tap:  clamp(40px, 6.0vw, 48px);      /* 손가락 목표 높이 */
+  --fab:  clamp(54px, 14vw, 68px)}       /* 현위치 버튼 지름 */
 *{box-sizing:border-box}
+/* ★iOS 가 가로/세로를 돌 때 글자를 제멋대로 키우는 것을 막는다(들쭉날쭉해 보인다) */
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 /* ★모바일 주소창이 접히고 펴지며 100vh 가 출렁인다 — dvh 를 쓰고, 지도는 fixed 로 고정한다.
    dvh 를 모르는 구형 브라우저용으로 100% 를 먼저 둔다(뒤 선언이 이긴다). */
 html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans KR",sans-serif;color:var(--ink)}
 #map{position:fixed;inset:0}
 .panel{position:absolute;background:rgba(255,255,255,.97);border-radius:10px;box-shadow:var(--shadow);z-index:5}
 #ctl{top:12px;left:12px;padding:5px;display:flex;gap:2px;align-items:center;flex-wrap:wrap;max-width:calc(100vw - 24px)}
-.panel button{border:none;background:none;color:var(--muted);font-size:12px;font-weight:500;padding:7px 11px;border-radius:6px;cursor:pointer;white-space:nowrap}
+.panel button{border:none;background:none;color:var(--muted);font-size:var(--ui);font-weight:500;
+  min-height:var(--tap);padding:7px 11px;border-radius:6px;cursor:pointer;white-space:nowrap}
 .panel button:hover{background:var(--raise);color:var(--ink)}
 #ctl button.on{background:var(--ink);color:#fff;font-weight:600}
 .panel button.sep{margin-left:4px;border:1px solid var(--line)}
 #status{pointer-events:none;position:absolute;bottom:12px;left:50%;transform:translateX(-50%);z-index:6;background:rgba(21,29,44,.9);
-  color:#fff;font-size:12px;padding:8px 14px;border-radius:8px;max-width:min(560px,calc(100vw - 24px));display:none;line-height:1.45}
+  color:#fff;font-size:var(--ui);padding:9px 15px;border-radius:8px;max-width:min(560px,calc(100vw - 24px));display:none;line-height:1.45}
 #status.warn{background:#8a1c2b}
 #coord{position:absolute;bottom:12px;right:12px;z-index:5;background:rgba(255,255,255,.92);border-radius:6px;
-  padding:5px 9px;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+  padding:5px 9px;font-size:var(--ui-s);color:var(--muted);font-variant-numeric:tabular-nums}
 .maplibregl-ctrl-attrib{font-size:10px}
 /* 노치·홈바를 피한다(viewport-fit=cover 와 짝) */
 #ctl{top:calc(12px + env(safe-area-inset-top));left:calc(12px + env(safe-area-inset-left))}
@@ -50,11 +65,12 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
 /* ★`pointer:coarse` 하나만 보면 안 된다 — 그 판정이 안 되는 기기가 있어(스타일러스 지원 등)
    폰인데도 큰 버튼이 안 떴다. **화면 폭 조건을 함께** 둔다. */
 @media (pointer:coarse), (max-width:900px){
-  .panel button{min-height:44px;font-size:14px;padding:10px 14px}
-  #ctl{gap:4px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;
+  .panel button{padding:10px 14px}
+  /* ★종전엔 `flex-wrap:nowrap; overflow-x:auto` 였다 — 버튼 6개가 폰 폭(390px)을 넘어
+     **오른쪽으로 밀려 안 보였고**, 가로로 쓸어야 나오는 걸 알 길이 없었다.
+     줄을 바꿔 **전부 보이게** 한다(두 줄이 되더라도). */
+  #ctl{gap:4px;flex-wrap:wrap;
        max-width:calc(100vw - 24px - env(safe-area-inset-left) - env(safe-area-inset-right))}
-  #ctl::-webkit-scrollbar{display:none}
-  #status{font-size:14px;padding:11px 16px}
 }
 /* 엄지로 누르는 현위치 버튼 — 화면 왼쪽 아래. **현위치는 이것 하나뿐이다.**
    ★상단 바에도 두고 화면 크기로 갈랐더니, 판정이 갈리는 기기마다 결과가 달랐다:
@@ -62,8 +78,8 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
      "왼쪽 아래로 안 갔다"가 됐다. 조건을 없애고 **항상 뜨는 하나**로 만든다. */
 #gpsFab{display:flex;position:fixed;z-index:7;
   left:calc(14px + env(safe-area-inset-left));bottom:calc(20px + env(safe-area-inset-bottom));
-  width:58px;height:58px;border-radius:50%;border:none;cursor:pointer;
-  align-items:center;justify-content:center;font-size:24px;
+  width:var(--fab);height:var(--fab);border-radius:50%;border:none;cursor:pointer;
+  align-items:center;justify-content:center;font-size:calc(var(--fab) * 0.42);
   background:rgba(255,255,255,.97);box-shadow:var(--shadow);color:var(--muted)}
 #gpsFab.on{background:#1E88E5;color:#fff}
 /* 메모 입력 — window.prompt 는 모바일 브라우저에 따라 막히거나 쓰기 나쁘다.
@@ -71,10 +87,10 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
 #memoEdit{display:none;position:fixed;z-index:8;left:50%;transform:translateX(-50%);
   bottom:calc(16px + env(safe-area-inset-bottom));width:min(420px,calc(100vw - 24px));padding:12px}
 #memoEdit textarea{width:100%;box-sizing:border-box;border:1px solid var(--line);border-radius:8px;
-  padding:9px 10px;font:inherit;font-size:14px;resize:vertical;min-height:64px}
+  padding:9px 10px;font:inherit;font-size:var(--ui);resize:vertical;min-height:clamp(64px,18vw,110px)}
 #memoEdit .row{display:flex;gap:6px;margin-top:9px}
 #memoEdit .row button{flex:1;padding:10px;border-radius:7px;border:1px solid var(--line);
-  background:var(--surface);font-size:13px;font-weight:600;cursor:pointer;min-height:44px}
+  background:var(--surface);font-size:var(--ui);font-weight:600;cursor:pointer;min-height:var(--tap)}
 #memoEdit .row button.pri{background:var(--ink);color:#fff;border-color:var(--ink)}
 #memoEdit .row button.del{color:#B3261E;border-color:#F0C4C0}
 /* 메모 버튼 아래로 펼쳐지는 선택 — 순환보다 무엇을 고르는지가 눈에 보인다 */
@@ -95,6 +111,7 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
   <button id="btnRoad" title="도로 중심선 — 확대해야 보입니다">도로</button>
   <button id="btnMemo" class="sep" title="눌러서 점·선·면을 고릅니다. 메모는 이 기기에만 저장됩니다">✎ 메모</button>
   <button id="btnMemoOut" style="display:none" title="메모를 GeoJSON 파일로 내보내기">⤓</button>
+  <button id="btnOffline" class="sep" title="배경지도까지 내려받아 인터넷 없이 쓸 수 있게 합니다">⬇ 오프라인</button>
 </div>
 <button id="gpsFab" title="현위치 — HTTPS 에서만 동작합니다" aria-label="현위치">◎</button>
 <div class="panel" id="memoMenu">
@@ -166,12 +183,21 @@ function status(msg, warn){
    ★배경을 바꿀 때 라벨 층도 **같이** 지운다 — 안 지우면 다음 배경 위에 옛 라벨이 남는다. */
 const vw = (layer, ext) =>
   `https://api.vworld.kr/req/wmts/1.0.0/${FIELD_CFG.vworldKey}/${layer}/{z}/{y}/{x}.${ext||"png"}`;
+/* ★배경지도를 **번들 안에서 먼저 읽는다**(docs/basemap · z8~16 · 5,892장 79MB).
+   인터넷이 끊겨도 배경이 남는다. z16 위에서는 브이월드 원본을 그 위에 겹쳐 선명하게
+   보고, 인터넷이 없으면 **그 겹침만 조용히 실패**해 z16 을 확대한 배경이 남는다.
+   ★도로·리 이름은 벡터라 확대해도 계속 날카롭다 — 흐려지는 건 배경 사진뿐이다. */
+const LOCAL_BM_MAXZ = 16;
+const bmLocal = (name, ext) => api(`/basemap/${name}/{z}/{y}/{x}.${ext}`);
 const BASEMAPS = {
   /* ★배경지도는 **브이월드·위성 둘뿐**이다(요청). 종전의 '일반'·'지형'은 뺐다.
      참고 — OSM 공개 타일 서버는 어차피 못 쓴다: 사용정책이 앱 용도의 대량 사용을
      금지하고, 넘으면 "Rate limit exceeded" 로 차단한다(실제로 겪었다). */
-  vworld:    { tiles:[vw("Base")], attribution:"© VWorld · 국토교통부" },
-  satellite: { tiles:[vw("Satellite","jpeg")], labelTiles:[vw("Hybrid")], attribution:"© VWorld · 국토교통부" },
+  vworld:    { tiles:[bmLocal("Base","png")], hi:[vw("Base")],
+               attribution:"© VWorld · 국토교통부" },
+  satellite: { tiles:[bmLocal("Satellite","jpeg")], hi:[vw("Satellite","jpeg")],
+               labelTiles:[bmLocal("Hybrid","png")], hiLbl:[vw("Hybrid")],
+               attribution:"© VWorld · 국토교통부" },
 };
 let curBm = "vworld";
 
@@ -187,8 +213,8 @@ const map = new maplibregl.Map({
     //   `glyphsUrl is not set` 이 난다 — 그러면 숫자가 섞인 라벨 하나 때문에 그 타일의
     //   심볼 전체가 실패해 한글 지명까지 통째로 사라진다(원 저장소에서 실제로 겪었다).
     glyphs: api("/fonts/{fontstack}/{range}.pbf"),
-    sources:{ basemap:{type:"raster", tiles:BASEMAPS[curBm].tiles, tileSize:256, maxzoom:18,
-                       attribution:BASEMAPS[curBm].attribution} },
+    sources:{ basemap:{type:"raster", tiles:BASEMAPS[curBm].tiles, tileSize:256,
+                       maxzoom:LOCAL_BM_MAXZ, attribution:BASEMAPS[curBm].attribution} },
     layers:[{id:"basemap", type:"raster", source:"basemap"}] }
 });
 map.touchZoomRotate.disableRotation();
@@ -198,16 +224,30 @@ map.addControl(new maplibregl.ScaleControl({maxWidth:110, unit:"metric"}), "bott
 function setBasemap(key){
   const b=BASEMAPS[key]; if(!b) return;
   curBm=key;
-  ["basemap-lbl","basemap"].forEach(id=>{
+  ["basemap-lbl-hi","basemap-lbl","basemap-hi","basemap"].forEach(id=>{
     if(map.getLayer(id)) map.removeLayer(id);
     if(map.getSource(id)) map.removeSource(id);
   });
   const first=(map.getStyle().layers[0]||{}).id;      // 항상 맨 아래(도로·경계 밑)
-  map.addSource("basemap",{type:"raster", tiles:b.tiles, tileSize:256, maxzoom:18, attribution:b.attribution});
+  /* 아래→위 순으로 넣는다: 번들 배경 → (z16 위)원본 배경 → 번들 지명 → 원본 지명.
+     ★원본 두 겹은 인터넷이 없으면 타일이 안 와서 그냥 안 그려진다 — 아래 번들 배경이
+       남으므로 화면이 비지 않는다. 이것이 오프라인에서 배경이 살아 있는 이유다. */
+  const HI = LOCAL_BM_MAXZ + 0.5;
+  map.addSource("basemap",{type:"raster", tiles:b.tiles, tileSize:256,
+                           maxzoom:LOCAL_BM_MAXZ, attribution:b.attribution});
   map.addLayer({id:"basemap", type:"raster", source:"basemap"}, first);
+  if(b.hi){
+    map.addSource("basemap-hi",{type:"raster", tiles:b.hi, tileSize:256, maxzoom:18});
+    map.addLayer({id:"basemap-hi", type:"raster", source:"basemap-hi", minzoom:HI}, first);
+  }
   if(b.labelTiles){
-    map.addSource("basemap-lbl",{type:"raster", tiles:b.labelTiles, tileSize:256, maxzoom:18});
+    map.addSource("basemap-lbl",{type:"raster", tiles:b.labelTiles, tileSize:256,
+                                 maxzoom:LOCAL_BM_MAXZ});
     map.addLayer({id:"basemap-lbl", type:"raster", source:"basemap-lbl"}, first);
+    if(b.hiLbl){
+      map.addSource("basemap-lbl-hi",{type:"raster", tiles:b.hiLbl, tileSize:256, maxzoom:18});
+      map.addLayer({id:"basemap-lbl-hi", type:"raster", source:"basemap-lbl-hi", minzoom:HI}, first);
+    }
   }
   document.querySelectorAll("#ctl [data-bm]").forEach(x=>x.classList.toggle("on", x.dataset.bm===key));
 }
@@ -239,13 +279,13 @@ function roadLayers(){
      paint:{"text-color":"#8E0A47","text-halo-color":"#FFFFFF","text-halo-width":1.8}},
   ];
 }
-/* 도로 버튼 하나가 **표시와 투명도**를 같이 돈다: 100% → 70% → 40% → 끔 → …
-   ★버튼을 더 늘리지 않으려고 합쳤다. 현장에서 도로가 영상을 가릴 때 한 번 더 누르면 옅어진다.
-   ★테두리는 선보다 더 옅게 간다 — 투명해질수록 흰/검은 테두리가 먼저 눈에 거슬린다. */
-const ROAD_STEPS = [1.0, 0.7, 0.4, 0];      // 0 = 끔
-let roadStep = 0;
+/* 도로 버튼은 **켜고 끄기만** 한다(요청). 투명도는 30% 고정 — 배경 영상을 덜 가린다.
+   ★종전엔 한 버튼이 100%→70%→40%→끔 을 돌았는데, 현장에서 몇 번째인지 세게 만들었다.
+   ★테두리는 선보다 더 옅게 간다 — 투명해질수록 어두운 테두리가 먼저 눈에 거슬린다. */
+const ROAD_OPACITY = 0.7;                   // 30% 투명
+let roadStep = 1;                           // 1=켬 · 0=끔
 function roadApply(){
-  const op = ROAD_STEPS[roadStep];
+  const op = roadStep ? ROAD_OPACITY : 0;
   const btn=document.getElementById("btnRoad");
   if(op === 0){
     roadLayers().forEach(L=>{ if(map.getLayer(L.id)) map.removeLayer(L.id); });
@@ -267,10 +307,9 @@ function roadApply(){
   if(map.getLayer("road-name")) map.setPaintProperty("road-name","text-opacity", op);
 }
 function roadToggle(){
-  roadStep = (roadStep + 1) % ROAD_STEPS.length;
+  roadStep = roadStep ? 0 : 1;
   roadApply();
-  const op = ROAD_STEPS[roadStep];
-  status(op === 0 ? "도로를 껐습니다" : `도로 ${Math.round(op*100)}%`);
+  status(roadStep ? "도로를 켰습니다" : "도로를 껐습니다");
 }
 document.getElementById("btnRoad").onclick=roadToggle;
 { const b=document.getElementById("btnAoi"); if(b) b.onclick=aoiGo; }
@@ -780,11 +819,58 @@ map.on("mousemove",(e)=>{
   document.getElementById("coord").textContent =
     `${e.lngLat.lat.toFixed(5)}, ${e.lngLat.lng.toFixed(5)}  ·  z${map.getZoom().toFixed(1)}`;
 });
+/* ══ 오프라인 준비 ═══════════════════════════════════════════════════════════
+   ★"인터넷 되는 곳에서 미리 켜두면 되지 않나" — 반만 맞다. 탭을 켠 채로 끊기면 쓸 수
+     있지만, 새로고침하거나 폰이 탭을 정리하면 끝이다. 실측한 캐시 수명이
+       GitHub Pages 의 index.html·roads.geojson : max-age=600 (10분)
+     이라 10분 뒤엔 페이지 자체를 못 받는다. 서비스 워커가 그것을 영구 저장으로 바꾼다.
+   ★배경지도 5,892장(79MB)은 **누를 때** 받는다. 첫 방문에 조용히 79MB 를 끌어가면
+     그건 요금과 시간을 함부로 쓰는 것이다. */
+const OFF_KEY = "fieldmap.offline.v1";
+let swReg = null;
+function offlineMark(done){
+  const b=document.getElementById("btnOffline"); if(!b) return;
+  b.textContent = done ? "✓ 오프라인" : "⬇ 오프라인";
+  b.classList.toggle("on", !!done);
+}
+async function swInit(){
+  if(!("serviceWorker" in navigator)) return;          // http:// 나 구형이면 그냥 없다
+  try{
+    swReg = await navigator.serviceWorker.register(PAGE_DIR + "/sw.js");
+    navigator.serviceWorker.addEventListener("message",(ev)=>{
+      const d=ev.data||{};
+      if(d.type==="BAKE_PROGRESS")
+        status(`배경지도 저장 중… ${d.ok.toLocaleString()}/${d.total.toLocaleString()}`);
+      else if(d.type==="BAKE_DONE"){
+        if(d.err) return status(`오프라인 준비 실패 — ${d.err}`, true);
+        try{ localStorage.setItem(OFF_KEY, String(d.ok)); }catch(e){}
+        offlineMark(true);
+        status(`오프라인 준비 완료 — 배경지도 ${d.ok.toLocaleString()}장`
+             + (d.fail ? ` (${d.fail}장 실패)` : "") + ". 이제 인터넷 없이 쓸 수 있습니다.");
+      }
+    });
+  }catch(e){ console.warn("[sw] 등록 실패", e); }
+  try{ offlineMark(!!localStorage.getItem(OFF_KEY)); }catch(e){}
+}
+async function offlinePrep(){
+  if(!("serviceWorker" in navigator))
+    return status("이 브라우저는 오프라인 저장을 지원하지 않습니다", true);
+  const reg = swReg || await navigator.serviceWorker.ready;
+  const sw = reg && (reg.active || navigator.serviceWorker.controller);
+  if(!sw) return status("오프라인 저장소를 준비 중입니다 — 잠시 뒤 다시 눌러 주세요", true);
+  // ★저장소를 '영구'로 요청한다 — 안 하면 브라우저가 공간이 필요할 때 먼저 지운다
+  try{ if(navigator.storage && navigator.storage.persist) await navigator.storage.persist(); }catch(e){}
+  status("배경지도를 내려받는 중… 인터넷이 되는 곳에서 한 번만 하면 됩니다 (약 79MB)");
+  sw.postMessage({type:"BAKE"});
+}
+document.getElementById("btnOffline").onclick=offlinePrep;
+
 map.once("load", async ()=>{
+  swInit();
   setBasemap(curBm);
   const aoiBounds = await aoiLoad();
   await riLoad(aoiBounds);
-  roadStep = 1; roadApply();             // 도로는 켠 채로 시작(기본 70% — 30% 투명)
+  roadStep = 1; roadApply();             // 도로는 켠 채로 시작(30% 투명 고정)
   memoLayers(); memoRender(); rectBind(); // 저장해 둔 메모를 바로 띄운다
 });
 </script>
