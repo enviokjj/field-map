@@ -201,6 +201,21 @@ def main(argv=None):
         m = re.search(r'region:\s*\{\s*layer:"(\w+)",\s*code:"(\d+)",\s*name:"([^"]+)"', html)
         _check(res, "기본 연구지역", bool(m), f"{m.group(3)} ({m.group(1)}:{m.group(2)})" if m else "없음")
 
+        print("\n②b 자료 주소")
+        # ★타일·글리프는 **워커**에서 요청된다. 워커의 기준 URL 은 문서와 다를 수 있어
+        #   상대경로(`./tiles/…`)면 조용히 404 가 나고 "도로가 안 보인다"로만 나타난다.
+        #   루트 절대경로(`/tiles/…`)도 안 된다 — 프로젝트 Pages 는 하위경로에 산다.
+        _check(res, "자료 주소를 절대 URL 로 만든다",
+               "new URL(" in html and "document.baseURI" in html and '"." + p' not in html,
+               "워커에서도 같은 곳을 가리키게")
+        from urllib.parse import urljoin
+        for base_url, want in (("https://x.github.io/field-map/", "https://x.github.io/field-map/tiles/layers"),
+                               ("https://x.example.com/", "https://x.example.com/tiles/layers")):
+            got = urljoin(base_url, "tiles/layers")
+            _check(res, f"경로 해석 {base_url}", got == want, got)
+        _check(res, "타일 실패를 화면에 알린다", 'map.on("error"' in html,
+               "조용히 404 나면 원인을 못 찾는다")
+
         print("\n③ 글리프")
         # ★정규식으로 style 블록을 잘라 보려다 실패했다(중첩 괄호를 못 센다).
         #   **AST 로** 본다 — new maplibregl.Map({…}) 의 style 객체 안에 glyphs 가 있는가,

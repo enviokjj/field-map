@@ -98,11 +98,14 @@ const FIELD_CFG = {
 };
 const AOI_COLOR = "#0A84FF";        // 연구지역 테두리 — 도로(마젠타)와 확실히 구분되게
 const API = FIELD_CFG.apiBase.replace(/\/$/, "");
-/* ★상대경로로 만든다. GitHub Pages 의 **프로젝트 저장소**는 사이트 주소가
-   `https://<계정>.github.io/<저장소>/` 라, `/tiles/…` 같은 절대경로는 도메인 루트로 가서
-   404 가 난다. `./tiles/…` 는 페이지 위치 기준이라 루트 배포·하위경로 배포 양쪽에서 맞는다.
-   apiBase 를 절대주소로 준 경우(다른 서버를 부를 때)는 그대로 붙인다. */
-const api = (p) => API ? API + p : "." + p;
+/* ★**절대 URL** 로 만든다.
+   - `/tiles/…` 같은 루트 절대경로는 안 된다: GitHub Pages 프로젝트 저장소는 사이트가
+     `https://<계정>.github.io/<저장소>/` 라 도메인 루트로 가서 404 다.
+   - `./tiles/…` 같은 상대경로도 위험하다: **벡터 타일과 글리프는 워커에서 요청**되는데
+     워커의 기준 URL 은 문서와 다를 수 있다(blob/스크립트 위치). 그러면 조용히 404 가 나고
+     "도로가 안 보인다"로만 나타난다.
+   그래서 페이지 주소를 기준으로 **직접 절대화**한다 — 루트 배포·하위경로 배포 모두 안전하다. */
+const api = (p) => API ? API + p : new URL(p.replace(/^\//, ""), document.baseURI).href;
 const fetchJson = async (p) => {
   const r = await fetch(api(p));
   if(!r.ok) throw new Error(`${p} → ${r.status}`);
@@ -176,18 +179,21 @@ document.querySelectorAll("#ctl [data-bm]").forEach(b=>b.onclick=()=>setBasemap(
    ★마젠타를 고른 이유 — 배경 4종이 쓰지 않는 색이다. 브이월드·OSM 은 도로가 노랑/흰색,
      위성은 초록·회색, 지형은 베이지다. 빨강·주황 계열은 브이월드 도로와 섞여 안 보였다. */
 const ROAD_COLOR  = "#FF2D95";      // 도로 중심선
-const ROAD_CASING = "#FFFFFF";      // 테두리 — 어두운 위성에서 선이 묻히지 않게
+/* 테두리는 **어둡게**. 흰 테두리는 브이월드·일반(밝은 베이지·흰색) 위에서 같이 밝아
+   경계가 사라졌다. 어두운 테두리는 밝은 배경에서 선을 떼어 주고, 어두운 위성에서는
+   마젠타 자체가 충분히 밝아 문제가 없다. */
+const ROAD_CASING = "#1A1030";      // 테두리
 let ROAD_MINZ = 12;                 // /tiles/layers 에서 덮어쓴다(사본을 여기 고정하지 않는다)
 let roadOn = false;
 function roadLayers(){
   return [
     {id:"road-case", type:"line", source:"road", "source-layer":"road_line", minzoom:ROAD_MINZ,
-     paint:{"line-color":ROAD_CASING,"line-opacity":0.7,
-            "line-width":["interpolate",["linear"],["zoom"],12,3.4,17,8.0]}},
+     paint:{"line-color":ROAD_CASING,"line-opacity":0.5,
+            "line-width":["interpolate",["linear"],["zoom"],12,4.2,17,9.5]}},
     {id:"road-line", type:"line", source:"road", "source-layer":"road_line", minzoom:ROAD_MINZ,
      layout:{"line-cap":"round","line-join":"round"},
-     paint:{"line-color":ROAD_COLOR,"line-opacity":0.95,
-            "line-width":["interpolate",["linear"],["zoom"],12,1.5,17,4.4]}},
+     paint:{"line-color":ROAD_COLOR,"line-opacity":1.0,
+            "line-width":["interpolate",["linear"],["zoom"],12,2.0,17,5.5]}},
     {id:"road-name", type:"symbol", source:"road", "source-layer":"road_line", minzoom:14,
      filter:["all",["has","name"],["!=",["get","name"],""]],
      layout:{"symbol-placement":"line","text-field":["get","name"],
@@ -339,6 +345,16 @@ gpsBtns().forEach(b=>b.onclick=gpsStart);
 map.on("dragstart",()=>{ if(gpsFollow){ gpsFollow=false; status("따라가기 해제 — 현위치 버튼을 다시 누르면 재개"); } });
 
 /* ══ 시작 ═══════════════════════════════════════════════════════════════════ */
+/* ★조용한 실패를 막는다. 타일·글리프가 404 나도 지도는 그냥 비어 보일 뿐이라
+   "도로가 안 나온다"가 되고 원인을 못 찾는다. 소스 오류를 화면에 띄운다. */
+map.on("error",(e)=>{
+  const m=(e && e.error && e.error.message) || "";
+  const src=(e && e.sourceId) ? ` [${e.sourceId}]` : "";
+  if(!m) return;
+  console.warn("[지도 오류]"+src, e.error);
+  if(/404|Failed to fetch|NetworkError|AJAXError/i.test(m))
+    status(`자료를 못 불러왔습니다${src} — ${m.slice(0,90)}`, true);
+});
 map.on("mousemove",(e)=>{
   document.getElementById("coord").textContent =
     `${e.lngLat.lat.toFixed(5)}, ${e.lngLat.lng.toFixed(5)}  ·  z${map.getZoom().toFixed(1)}`;
