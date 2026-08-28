@@ -499,7 +499,9 @@ def main(argv=None):
                f"ROAD_OPACITY={m_op.group(1) if m_op else '없음'} (0.7 = 30% 투명)")
         _check(res, "단계 순환을 없앴다", "ROAD_STEPS" not in html,
                "단계가 남아 있으면 버튼이 또 여러 상태를 돈다")
-        _check(res, "켠 채로 시작", "roadStep = 1" in html, "100% 는 영상을 가린다")
+        # ★첫 화면은 도로를 **끈 채로** 연다(요청). 버튼으로 켠다.
+        _check(res, "꺼진 채로 시작", "roadStep = 0; roadApply()" in html,
+               "첫 화면에 도로가 깔려 있으면 배경을 가린다")
         _check(res, "투명도를 실제로 반영", 'setPaintProperty("road-line","line-opacity"' in html)
 
         print("\n⑧ 모바일·태블릿")

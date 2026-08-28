@@ -301,7 +301,7 @@ function roadLayers(){
    ★종전엔 한 버튼이 100%→70%→40%→끔 을 돌았는데, 현장에서 몇 번째인지 세게 만들었다.
    ★테두리는 선보다 더 옅게 간다 — 투명해질수록 어두운 테두리가 먼저 눈에 거슬린다. */
 const ROAD_OPACITY = 0.7;                   // 30% 투명
-let roadStep = 1;                           // 1=켬 · 0=끔
+let roadStep = 0;                           // 1=켬 · 0=끔 (첫 화면은 꺼짐 — 요청)
 function roadApply(){
   const op = roadStep ? ROAD_OPACITY : 0;
   const btn=document.getElementById("btnRoad");
@@ -966,7 +966,7 @@ map.once("load", async ()=>{
   setBasemap(curBm);
   const aoiBounds = await aoiLoad();
   await riLoad(aoiBounds);
-  roadStep = 1; roadApply();             // 도로는 켠 채로 시작(30% 투명 고정)
+  roadStep = 0; roadApply();             // ★도로는 **꺼진 채로** 시작(요청) — 버튼으로 켠다
   memoLayers(); memoRender(); rectBind(); // 저장해 둔 메모를 바로 띄운다
 });
 </script>
