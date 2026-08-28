@@ -16,9 +16,17 @@
  * ★배경지도 z8~16 은 번들에 들어 있지만(docs/basemap), **본 적 없는 타일은 캐시에 없다**.
  *   화면의 '오프라인 준비' 가 manifest.json 을 읽어 5,892장을 한 번에 저장한다.
  */
-const VERSION = "87314d04dd";          // ★build_static.py 가 굽을 때마다 새로 박는다
-const CACHE = "fieldmap-" + VERSION;
+/* ★캐시를 **둘로 나눈다**. 하나로 두면 index.html 을 한 줄만 고쳐도 판이 바뀌어
+   배경지도 79MB 를 통째로 다시 받게 된다.
+     앱   — 페이지·도로·경계 (약 5.6MB). 내용이 바뀌면 판이 올라가 **항상 최신**이 된다.
+     타일 — 배경지도 79MB. 목록(manifest)이 바뀔 때만 판이 올라간다.
+   두 판 모두 build_static.py 가 **내용 해시로** 박는다(사람이 올리면 잊는다). */
+const VERSION = "0bb7acd512";          // 앱·데이터 내용 해시
+const TILEVER = "e34a889dee";          // 배경지도 목록 해시
+const CACHE = "fieldmap-app-" + VERSION;
+const TILES = "fieldmap-tiles-" + TILEVER;
 const BASE = new URL("./", self.location).pathname;      // 예: /field-map/
+const isTile = (p) => p.startsWith(BASE + "basemap/");
 
 /* 페이지가 뜨는 데 반드시 있어야 하는 것들 — 설치할 때 미리 받는다(약 5.6MB). */
 const SHELL = ["", "index.html", "sw.js",
@@ -38,7 +46,8 @@ self.addEventListener("install", (e) => {
 
 self.addEventListener("activate", (e) => {
   e.waitUntil((async () => {
-    for (const k of await caches.keys()) if (k !== CACHE) await caches.delete(k);
+    for (const k of await caches.keys())
+      if (k !== CACHE && k !== TILES) await caches.delete(k);
     await self.clients.claim();
   })());
 });
@@ -63,7 +72,7 @@ self.addEventListener("fetch", (e) => {
 
   if (url.origin === self.location.origin) {          // 우리 파일 — 캐시 먼저
     e.respondWith((async () => {
-      const c = await caches.open(CACHE);
+      const c = await caches.open(isTile(url.pathname) ? TILES : CACHE);
       const hit = await c.match(req);
       if (hit) return hit;
       const res = await fetch(req);
@@ -92,7 +101,7 @@ self.addEventListener("message", (e) => {
   if (!e.data || e.data.type !== "BAKE") return;
   e.waitUntil((async () => {
     const send = (m) => e.source && e.source.postMessage(m);
-    const c = await caches.open(CACHE);
+    const c = await caches.open(TILES);          // 배경지도는 타일 캐시에 담는다
     let list = [];
     try {
       const r = await fetch(BASE + "basemap/manifest.json", {cache: "reload"});

@@ -536,6 +536,13 @@ def main(argv=None):
                "버튼만 남으면 눌렀을 때 아무 일도 안 일어난다")
 
         print("\n⑨ GPS 전제")
+        # ★"켜고 다른 데로 옮기면 현위치로 못 돌아온다" — 켜져 있으면 무조건 껐다.
+        #   세 갈래여야 한다: 꺼짐→켬 / 놓침→돌아가기 / 따라가는 중→끔.
+        #   갈래가 실제로 갈리는지는 tools/gps_behavior.py 가 **실행으로** 확인한다(16검사).
+        _check(res, "놓친 뒤 누르면 돌아간다", "if(!gpsFollow){" in code and "gpsLast" in code,
+               "켜져 있다고 바로 끄면 '돌아가기'가 사라진다")
+        _check(res, "놓친 상태를 눈으로 구분", "half" in code and "#gpsFab.on.half" in html,
+               "구분이 없으면 눌러도 아무 일 없는 것처럼 보인다")
         _check(res, "HTTPS 아님을 먼저 알린다", "isSecureContext" in html,
                "안 막으면 '눌러도 아무 반응이 없다'가 된다")
         _check(res, "권한 거부·타임아웃을 구분해 알린다",
@@ -545,8 +552,19 @@ def main(argv=None):
         # ★첫 번째 벽은 배경지도가 아니라 **지도 라이브러리**였다 — CDN 에서 받아오니
         #   인터넷이 없으면 페이지가 아예 안 떴다. 번들에 넣은 것을 굳힌다.
         _check(res, "지도 라이브러리를 번들에서 읽는다",
-               'src="vendor/maplibre-gl.js"' in html and "unpkg.com" not in html,
-               "CDN 이면 인터넷 없이 페이지가 아예 안 뜬다")
+               'src="vendor/maplibre-gl.js"' in html,
+               "CDN 만 보면 인터넷 없이 페이지가 아예 안 뜬다")
+        # ★반대쪽 위험도 있다 — 번들 **하나에만** 걸면 우리 파일이 한 번 못 올 때
+        #   (배포 중·전송 실패) 온라인인데도 지도가 통째로 안 뜬다. 예비 경로를 둔다.
+        # ★첫 판은 `"if(!window.maplibregl)" in html` 이었는데, **같은 문구가 아래
+        #   오류 안내에도 있어** 예비 경로를 없애도 통과했다. 그 두 줄을 통째로 본다.
+        _check(res, "못 받으면 CDN 으로 한 번 더",
+               "if(!window.maplibregl)\n  document.write(" in html
+               and "unpkg.com/maplibre-gl" in html,
+               "온라인인데 실행이 안 되는 경우를 막는다")
+        _check(res, "그래도 없으면 이유를 보여 준다",
+               "지도를 불러오지 못했습니다" in html,
+               "빈 화면만 남으면 무엇이 잘못됐는지 알 길이 없다")
         st, body = _get(base, "/vendor/maplibre-gl.js", raw=True)
         _check(res, "라이브러리 서빙", st == 200 and len(body) > 500_000,
                f"{len(body):,}B" if st == 200 else f"HTTP {st}")
@@ -557,8 +575,12 @@ def main(argv=None):
         _check(res, "서비스 워커 서빙", st == 200 and "fieldmap-" in swt,
                f"{len(sw):,}B" if st == 200 else f"HTTP {st}")
         # ★판 번호를 안 박으면 브라우저가 옛 파일을 계속 내준다(캐시 이름이 그대로다).
-        _check(res, "서비스 워커 판 번호가 박혔다", "__VERSION__" not in swt,
+        _check(res, "서비스 워커 판 번호가 박혔다",
+               "__VERSION__" not in swt and "__TILEVER__" not in swt,
                "굽는 쪽(build_static.stamp_sw)이 자동으로 박는다 — 사람이 하면 잊는다")
+        # ★앱 캐시와 타일 캐시를 나눈다 — 안 나누면 index.html 한 줄에 79MB 를 다시 받는다.
+        _check(res, "앱 캐시와 타일 캐시가 분리", "fieldmap-app-" in swt and "fieldmap-tiles-" in swt,
+               "한 판으로 묶으면 작은 수정에 배경지도 79MB 를 통째로 다시 받는다")
         _check(res, "우리 파일은 캐시 먼저", "caches.open(CACHE)" in swt and "c.match(req)" in swt)
         _check(res, "배경지도 원본은 네트워크 먼저", 'url.hostname === "api.vworld.kr"' in swt,
                "온라인에서는 최신을 쓰고, 끊기면 캐시로 떨어진다")

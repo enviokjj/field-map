@@ -20,8 +20,16 @@
   설정은 아래 FIELD_CFG 한 곳에서만 바꾼다.
 -->
 <!-- ★지도 라이브러리를 **번들에 넣는다**(종전엔 unpkg CDN). 인터넷이 끊기면 CDN 을
-     못 받아 **페이지가 아예 안 뜨던** 것이 오프라인의 첫 번째 벽이었다. 0.80MB. -->
+     못 받아 **페이지가 아예 안 뜨던** 것이 오프라인의 첫 번째 벽이었다. 0.80MB.
+     ★그런데 번들 하나에만 걸면 이번엔 **온라인이 위태로워진다** — 우리 파일이 한 번
+       못 오면(배포 중·전송 실패) 지도가 통째로 안 뜬다. 종전엔 CDN 이 그 역할을
+       나눠 갖고 있었다. 그래서 **못 왔을 때만** CDN 으로 한 번 더 간다.
+       오프라인에서는 이 줄이 조용히 실패하고, 이미 받아 둔 번들이 쓰인다. -->
 <script src="vendor/maplibre-gl.js"></script>
+<script>
+if(!window.maplibregl)
+  document.write('<scr'+'ipt src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"><\/scr'+'ipt>');
+</script>
 <link href="vendor/maplibre-gl.css" rel="stylesheet">
 <style>
 :root{--ink:#151D2C;--muted:#697A92;--line:#DEE4EC;--surface:#fff;--raise:#EEF2F6;
@@ -86,6 +94,7 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
   align-items:center;justify-content:center;font-size:calc(var(--fab) * 0.42);
   background:rgba(255,255,255,.97);box-shadow:var(--shadow);color:var(--muted)}
 #gpsFab.on{background:#1E88E5;color:#fff}
+#gpsFab.on.half{background:#A8CBEA;color:#0B3B5C}   /* 켜졌지만 현위치를 놓친 상태 */
 /* 메모 입력 — window.prompt 는 모바일 브라우저에 따라 막히거나 쓰기 나쁘다.
    화면 안에서 받는다(아래에서 올라오는 카드). */
 #memoEdit{display:none;position:fixed;z-index:8;left:50%;transform:translateX(-50%);
@@ -108,6 +117,7 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
 </head>
 <body>
 <div id="map"></div>
+<noscript><div style="padding:20px;font:14px sans-serif">자바스크립트를 켜 주세요.</div></noscript>
 <div class="panel" id="ctl">
   <button data-bm="vworld">브이월드</button>
   <button data-bm="satellite">위성</button>
@@ -205,6 +215,16 @@ const BASEMAPS = {
 };
 let curBm = "vworld";
 
+/* ★지도 라이브러리가 끝내 없으면 **빈 화면 대신 이유를 말한다**.
+   여기서 그냥 터지면 화면이 하얗게 남고, 사용자는 무엇이 잘못됐는지 알 길이 없다. */
+if(!window.maplibregl){
+  document.getElementById("map").innerHTML =
+    '<div style="padding:24px;font:15px/1.6 sans-serif;color:#151D2C">'
+  + '<b>지도를 불러오지 못했습니다.</b><br>인터넷 연결을 확인하고 새로고침해 주세요.<br>'
+  + '<span style="color:#697A92;font-size:13px">한 번이라도 접속한 적이 있다면 '
+  + '오프라인으로도 열립니다 — 그때는 이 화면이 나오지 않습니다.</span></div>';
+  throw new Error("maplibre-gl 을 못 받았다");
+}
 const map = new maplibregl.Map({
   container:"map",
   center:[(FIELD_CFG.region.bbox[0]+FIELD_CFG.region.bbox[2])/2,
@@ -745,10 +765,15 @@ map.on("click",(e)=>{
 /* ══ GPS 현위치 ══════════════════════════════════════════════════════════════
    ★HTTPS(보안 컨텍스트)에서만 동작한다. http:// 로 열면 브라우저가 위치를 아예 안 준다
      (localhost 만 예외). 그 경우를 먼저 알려 준다 — 안 그러면 "눌러도 아무 일도 없다"가 된다. */
-let gpsWatch=null, gpsFollow=false;
+let gpsWatch=null, gpsFollow=false, gpsLast=null;   // gpsLast = 마지막으로 받은 좌표
 // 바 버튼과 엄지 버튼(FAB) 두 개가 같은 상태를 보여야 한다 — 한쪽만 바꾸면 어긋난다
 const gpsBtns = () => [document.getElementById("btnGps"), document.getElementById("gpsFab")].filter(Boolean);
-const gpsMark = (on) => gpsBtns().forEach(b=>b.classList.toggle("on", on));
+/* 버튼 색이 **세 가지 상태**를 말한다: 꺼짐 / 켜졌고 따라가는 중 / 켜졌지만 놓친 상태.
+   ★놓친 상태를 구분해 보여 주지 않으면, 눌러도 아무 일이 없는 것처럼 느껴진다. */
+const gpsMark = (watching, following) => gpsBtns().forEach(b=>{
+  b.classList.toggle("on", !!watching);
+  b.classList.toggle("half", !!watching && !following);
+});
 function gpsLayers(){
   if(map.getSource("gps")) return;
   map.addSource("gps",{type:"geojson", data:{type:"FeatureCollection",features:[]}});
@@ -763,23 +788,38 @@ function gpsLayers(){
 }
 function gpsStop(){
   if(gpsWatch!==null){ navigator.geolocation.clearWatch(gpsWatch); gpsWatch=null; }
-  gpsFollow=false;
+  gpsFollow=false; gpsLast=null;
   ["gps-dot","gps-acc"].forEach(id=>{ if(map.getLayer(id)) map.removeLayer(id); });
   if(map.getSource("gps")) map.removeSource("gps");
-  gpsMark(false);
+  gpsMark(false, false);
 }
 function gpsStart(){
-  if(gpsWatch!==null){ gpsStop(); status("현위치를 껐습니다"); return; }
+  if(gpsWatch!==null){
+    /* ★여기가 "현위치로 돌아가는 기능이 안 된다"의 정체였다.
+       켜져 있으면 **무조건 껐다**. 지도를 끌어 현위치를 놓친 뒤 버튼을 누르면
+       돌아가는 게 아니라 GPS 가 꺼졌다 — 안내문("다시 누르면 재개")과도 어긋났다.
+       이제 세 갈래다: 꺼짐→켬 / 놓침→**돌아가기** / 따라가는 중→끔. */
+    if(!gpsFollow){
+      gpsFollow=true; gpsMark(true, true);
+      if(gpsLast){
+        map.easeTo({center:gpsLast, zoom:Math.max(map.getZoom(),15), duration:600});
+        status("현위치로 돌아갑니다");
+      } else status("현위치를 찾는 중…");
+      return;
+    }
+    gpsStop(); status("현위치를 껐습니다"); return;
+  }
   if(!navigator.geolocation){ status("이 브라우저는 위치 기능을 지원하지 않습니다", true); return; }
   if(!window.isSecureContext){          // ★여기서 안 막으면 "눌러도 반응이 없다"가 된다
     status("현위치는 HTTPS 에서만 동작합니다. 지금은 " + location.protocol
       + " 로 열려 있어 브라우저가 위치를 주지 않습니다 (localhost 만 예외).", true);
     return;
   }
-  gpsLayers(); gpsMark(true); gpsFollow=true;
+  gpsLayers(); gpsFollow=true; gpsMark(true, true);
   status("현위치를 찾는 중…");
   gpsWatch = navigator.geolocation.watchPosition((pos)=>{
     const {latitude:lat, longitude:lon, accuracy:acc} = pos.coords;
+    gpsLast=[lon,lat];                 // 놓친 뒤 버튼을 누르면 여기로 바로 돌아간다
     const src=map.getSource("gps"); if(!src) return;
     src.setData({type:"FeatureCollection", features:[{type:"Feature",
       properties:{acc:Math.max(acc||0,1), cosLat:Math.cos(lat*Math.PI/180)},
@@ -806,7 +846,8 @@ document.getElementById("btnMemoOut").onclick=memoExport;
 document.getElementById("btnMemoClear").onclick=memoClearAll;
 document.getElementById("btnMemoUndo").onclick=memoUndoClear;
 gpsBtns().forEach(b=>b.onclick=gpsStart);
-map.on("dragstart",()=>{ if(gpsFollow){ gpsFollow=false; status("따라가기 해제 — 현위치 버튼을 다시 누르면 재개"); } });
+map.on("dragstart",()=>{ if(gpsFollow){ gpsFollow=false; gpsMark(true, false);
+  status("따라가기를 멈췄습니다 — 현위치 버튼을 누르면 돌아갑니다"); } });
 
 /* ══ 시작 ═══════════════════════════════════════════════════════════════════ */
 /* ★조용한 실패를 막는다. 타일·글리프가 404 나도 지도는 그냥 비어 보일 뿐이라

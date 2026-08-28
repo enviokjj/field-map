@@ -148,10 +148,18 @@ def stamp_sw(out):
     if not sw.is_file():
         return None
     body = sw.read_text(encoding="utf8")
-    idx = (out / "index.html").read_bytes() if (out / "index.html").is_file() else b""
-    ver = hashlib.sha256(idx + body.replace("__VERSION__", "").encode()).hexdigest()[:10]
-    sw.write_text(body.replace("__VERSION__", ver), encoding="utf8")
-    return ver
+    # ★판이 **둘**이다. 하나로 두면 index.html 한 줄만 고쳐도 배경지도 79MB 를 통째로
+    #   다시 받게 된다. 앱(작다·자주 바뀜)과 타일(크다·거의 안 바뀜)을 따로 센다.
+    h = hashlib.sha256(body.replace("__VERSION__", "").replace("__TILEVER__", "").encode())
+    for name in ("index.html", "roads.geojson", "aoi/items", "boundary/adm_ri/items"):
+        f = out / name
+        if f.is_file():
+            h.update(f.read_bytes())
+    ver = h.hexdigest()[:10]
+    man = out / "basemap" / "manifest.json"
+    tv = hashlib.sha256(man.read_bytes()).hexdigest()[:10] if man.is_file() else "none"
+    sw.write_text(body.replace("__VERSION__", ver).replace("__TILEVER__", tv), encoding="utf8")
+    return f"{ver} · 타일 {tv}"
 
 
 def main(argv=None):
