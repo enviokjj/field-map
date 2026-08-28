@@ -35,7 +35,7 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
 .panel button:hover{background:var(--raise);color:var(--ink)}
 #ctl button.on{background:var(--ink);color:#fff;font-weight:600}
 .panel button.sep{margin-left:4px;border:1px solid var(--line)}
-#status{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);z-index:6;background:rgba(21,29,44,.9);
+#status{pointer-events:none;position:absolute;bottom:12px;left:50%;transform:translateX(-50%);z-index:6;background:rgba(21,29,44,.9);
   color:#fff;font-size:12px;padding:8px 14px;border-radius:8px;max-width:min(560px,calc(100vw - 24px));display:none;line-height:1.45}
 #status.warn{background:#8a1c2b}
 #coord{position:absolute;bottom:12px;right:12px;z-index:5;background:rgba(255,255,255,.92);border-radius:6px;
@@ -60,7 +60,7 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
 }
 /* 엄지로 누르는 현위치 버튼 — 터치 기기에서만 뜬다 */
 #gpsFab{display:none;position:fixed;z-index:7;
-  right:calc(14px + env(safe-area-inset-right));bottom:calc(84px + env(safe-area-inset-bottom));
+  left:calc(14px + env(safe-area-inset-left));bottom:calc(20px + env(safe-area-inset-bottom));
   width:58px;height:58px;border-radius:50%;border:none;cursor:pointer;
   align-items:center;justify-content:center;font-size:24px;
   background:rgba(255,255,255,.97);box-shadow:var(--shadow);color:var(--muted)}
@@ -76,6 +76,10 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
   background:var(--surface);font-size:13px;font-weight:600;cursor:pointer;min-height:44px}
 #memoEdit .row button.pri{background:var(--ink);color:#fff;border-color:var(--ink)}
 #memoEdit .row button.del{color:#B3261E;border-color:#F0C4C0}
+/* 메모 버튼 아래로 펼쳐지는 선택 — 순환보다 무엇을 고르는지가 눈에 보인다 */
+#memoMenu{display:none;position:absolute;z-index:9;padding:5px;flex-direction:column;gap:2px;min-width:132px}
+#memoMenu button{width:100%;text-align:left}
+#memoMenu button.on{background:var(--ink);color:#fff}
 @media (max-width:700px){#coord{display:none}}
 </style>
 </head>
@@ -88,12 +92,18 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
   <button data-bm="topo" id="btnTopo" style="display:none">지형</button>
   <button id="btnAoi" class="sep" style="display:none" title="연구지역으로 이동">⛶ 연구지역</button>
   <button id="btnRoad" title="도로 중심선 — 확대해야 보입니다">도로</button>
-  <button id="btnMemo" class="sep" title="누를 때마다 점 → 선 → 면 → 끔. 메모는 이 기기에만 저장됩니다">✎ 메모</button>
+  <button id="btnMemo" class="sep" title="눌러서 점·선·면을 고릅니다. 메모는 이 기기에만 저장됩니다">✎ 메모</button>
   <button id="btnMemoDone" style="display:none" title="그리던 도형을 마칩니다">✓</button>
   <button id="btnMemoOut" style="display:none" title="메모를 GeoJSON 파일로 내보내기">⤓</button>
   <button id="btnGps" title="현위치 — HTTPS 에서만 동작합니다">◎ 현위치</button>
 </div>
 <button id="gpsFab" title="현위치" aria-label="현위치">◎</button>
+<div class="panel" id="memoMenu">
+  <button data-mm="point">● 점</button>
+  <button data-mm="line">╱ 선</button>
+  <button data-mm="polygon">▱ 면</button>
+  <button data-mm="">■ 끄기</button>
+</div>
 <div class="panel" id="memoEdit">
   <textarea id="memoText" placeholder="이 지점에 남길 메모"></textarea>
   <div class="row">
@@ -155,7 +165,10 @@ function status(msg, warn){
 const vw = (layer, ext) =>
   `https://api.vworld.kr/req/wmts/1.0.0/${FIELD_CFG.vworldKey}/${layer}/{z}/{y}/{x}.${ext||"png"}`;
 const BASEMAPS = {
-  osm:       { tiles:["https://tile.openstreetmap.org/{z}/{x}/{y}.png"], attribution:"© OpenStreetMap" },
+  /* ★OSM 공개 타일 서버는 **쓰지 않는다**. 그쪽 사용정책이 앱 용도의 대량 사용을 금지하고,
+     넘으면 차단한다 — 화면에 "Rate limit exceeded" 로 나타난다(실제로 겪었다).
+     대신 V-World 의 밝은 지도(white)를 쓴다. 같은 사업자라 키·정책이 하나로 정리된다. */
+  osm:       { tiles:[vw("white")], attribution:"© VWorld · 국토교통부" },
   vworld:    { tiles:[vw("Base")], attribution:"© VWorld · 국토교통부" },
   satellite: { tiles:[vw("Satellite","jpeg")], labelTiles:[vw("Hybrid")], attribution:"© VWorld · 국토교통부" },
 };
@@ -246,11 +259,13 @@ function roadApply(){
     return;
   }
   if(!map.getSource("road"))
-    // maxzoom:16 = 그 위 줌은 16 타일을 확대해 쓴다(서버 부하를 늘리지 않는다)
+    // maxzoom:18 = 10m 축척(z19~20)까지 실제 데이터로 버틴다. 그 위는 18 타일을 확대해 쓴다.
+    //   ★확대해 써도 손실은 없다 — MVT 는 타일당 4096 격자라 z18 이면 이미 0.15m 급이다.
+    //     굽는 줌을 더 올리는 건 파일 수만 4배씩 늘릴 뿐이다.
     map.addSource("road",{type:"vector", tiles:[api("/tiles/road_line/{z}/{x}/{y}.pbf")],
-                          minzoom:ROAD_MINZ, maxzoom:16});
+                          minzoom:ROAD_MINZ, maxzoom:18});
   roadLayers().forEach(L=>{ if(!map.getLayer(L.id)) map.addLayer(L); });
-  roadOn=true; btn.classList.add("on"); btn.textContent=`도로 ${Math.round(op*100)}%`;
+  roadOn=true; btn.classList.add("on"); btn.textContent="도로";   // ★%는 버튼에 안 쓴다(요청) — 바꿀 때 안내만
   if(map.getLayer("road-line")) map.setPaintProperty("road-line","line-opacity", op);
   if(map.getLayer("road-case")) map.setPaintProperty("road-case","line-opacity", op*0.5);
   if(map.getLayer("road-name")) map.setPaintProperty("road-name","text-opacity", op);
@@ -360,8 +375,19 @@ function memoRead(){
   return {type:"FeatureCollection", features:[]};
 }
 function memoWrite(fc){
-  try{ localStorage.setItem(MEMO_KEY, JSON.stringify(fc)); }
-  catch(e){ status("메모를 저장하지 못했습니다 — 브라우저 저장소가 막혀 있습니다", true); }
+  // ★쓰고 나서 **되읽어 확인**한다. 사파리 비공개 모드·저장소 가득참 등에서 setItem 이
+  //   조용히 실패하거나 예외 없이 안 남는 경우가 있어, 그러면 "저장을 눌러도 저장이 안 된다"가 된다.
+  try{
+    localStorage.setItem(MEMO_KEY, JSON.stringify(fc));
+    const back=JSON.parse(localStorage.getItem(MEMO_KEY)||"null");
+    if(!back || back.features.length!==fc.features.length) throw new Error("되읽기 불일치");
+    return true;
+  }catch(e){
+    console.warn("[메모] 저장 실패", e);
+    status("메모를 저장하지 못했습니다 — 브라우저 저장소가 막혀 있습니다(비공개 모드?). "
+         + "⤓ 로 내보내 두세요.", true);
+    return false;
+  }
 }
 /* 도형 하나의 **대표점** — 라벨을 여기 한 번만 찍는다. */
 function memoAnchor(g){
@@ -385,7 +411,7 @@ function memoRender(){
   if(b){
     const n=fc.features.length, m=memoMode();
     b.textContent = m ? (drawPts.length ? `${MEMO_LABEL[m]} ${drawPts.length}` : MEMO_LABEL[m])
-                      : (n ? `✎ 메모 ${n}` : "✎ 메모");
+                      : (n ? `✎ 메모 ${n}` : "✎ 메모");   // 끔이면 저장된 개수를 보여 준다
     b.classList.toggle("on", !!m);
   }
   const done=document.getElementById("btnMemoDone");
@@ -426,10 +452,24 @@ function memoLayers(){
   map.addLayer({id:"draft-dot", type:"circle", source:"draft",
     paint:{"circle-radius":5,"circle-color":"#00B0FF","circle-stroke-color":"#fff","circle-stroke-width":2}});
 }
-function memoCycle(){
+function memoMenuToggle(){
+  const menu=document.getElementById("memoMenu"), btn=document.getElementById("btnMemo");
+  const open = menu.style.display !== "flex";
+  if(open){                                   // 버튼 바로 아래에 붙인다
+    const r=btn.getBoundingClientRect();
+    menu.style.left = `${Math.max(8, r.left)}px`;
+    menu.style.top  = `${r.bottom + 6}px`;
+    menu.style.display = "flex";
+  } else menu.style.display = "none";
+  menu.querySelectorAll("[data-mm]").forEach(b=>
+    b.classList.toggle("on", (b.dataset.mm||"") === (memoMode()||"")));
+}
+function memoPick(mode){
+  document.getElementById("memoMenu").style.display="none";
   if(drawPts.length) status("그리던 도형을 버렸습니다");
   drawPts=[]; draftRender();
-  memoModeIdx=(memoModeIdx+1)%MEMO_MODES.length;
+  memoModeIdx = MEMO_MODES.indexOf(mode || null);
+  if(memoModeIdx < 0) memoModeIdx = 0;
   const m=memoMode();
   map.getCanvas().style.cursor = m ? "crosshair" : "";
   status(m==="point"   ? "지점을 누르면 메모를 남깁니다"
@@ -469,7 +509,7 @@ function memoSaveEdit(){
   if(!memoEditId) return memoClose();
   const fc=memoRead(), f=fc.features.find(x=>x.properties.id===memoEditId);
   if(f) f.properties.text = document.getElementById("memoText").value.trim();
-  memoWrite(fc); memoRender(); memoClose(); status("메모를 저장했습니다");
+  if(memoWrite(fc)){ memoRender(); memoClose(); status("메모를 저장했습니다"); }
 }
 function memoDelete(){
   if(!memoEditId) return memoClose();
@@ -487,17 +527,48 @@ function memoAdd(geom){
   memoWrite(fc); memoRender(); memoOpen(id);
   return id;
 }
-function memoExport(){
+async function memoExport(){
   const fc=memoRead();
   if(!fc.features.length){ status("내보낼 메모가 없습니다", true); return; }
-  const blob=new Blob([JSON.stringify(fc,null,2)],{type:"application/geo+json"});
-  const a=document.createElement("a");
-  a.href=URL.createObjectURL(blob);
-  a.download=`memos_${new Date().toISOString().slice(0,10)}.geojson`;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
-  status(`메모 ${fc.features.length}건을 내보냈습니다`);
+  const text=JSON.stringify(fc,null,2);
+  const name=`memos_${new Date().toISOString().slice(0,10)}.geojson`;
+
+  /* ★아이폰(사파리)은 `<a download>` 로 파일을 못 받는다 — 눌러도 아무 일이 없다.
+     iOS 에서 파일을 빼내는 정상 경로는 **공유 시트**다. 그래서 순서를 이렇게 둔다:
+       ① 공유 시트(navigator.share files) — iOS·안드로이드
+       ② 다운로드(a[download])          — 데스크톱
+       ③ 클립보드 복사                   — 둘 다 막혔을 때
+     ★공유는 **사용자 제스처 안에서** 불러야 한다 — 앞에서 await 하지 않는다. */
+  try{
+    if(navigator.canShare && typeof File==="function"){
+      const file=new File([text], name, {type:"application/geo+json"});
+      if(navigator.canShare({files:[file]})){
+        await navigator.share({files:[file], title:"현장 메모"});
+        status(`메모 ${fc.features.length}건을 공유했습니다`);
+        return;
+      }
+    }
+  }catch(e){
+    if(e && e.name==="AbortError") return;      // 사용자가 공유를 닫았다 — 실패가 아니다
+    console.warn("[내보내기] 공유 실패", e);
+  }
+  try{
+    const blob=new Blob([text],{type:"application/geo+json"});
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(blob); a.download=name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+    status(`메모 ${fc.features.length}건을 내려받았습니다`);
+    return;
+  }catch(e){ console.warn("[내보내기] 다운로드 실패", e); }
+  try{
+    await navigator.clipboard.writeText(text);
+    status(`메모 ${fc.features.length}건을 클립보드에 복사했습니다 — 메모장에 붙여 넣어 보관하세요`);
+  }catch(e){
+    status("내보내기가 막혀 있습니다 — 브라우저에서 공유·다운로드·클립보드가 모두 차단됐습니다", true);
+  }
 }
+
 map.on("click",(e)=>{
   const m=memoMode();
   // 그리는 중이 아닐 때만 기존 메모를 집는다 — 그리는 중에 눌리면 점이 안 찍힌다
@@ -574,7 +645,9 @@ function gpsStart(){
     status("현위치 실패 — " + why, true);
   }, {enableHighAccuracy:true, maximumAge:5000, timeout:15000});
 }
-document.getElementById("btnMemo").onclick=memoCycle;
+document.getElementById("btnMemo").onclick=memoMenuToggle;
+document.querySelectorAll("#memoMenu [data-mm]").forEach(b=>
+  b.onclick=()=>memoPick(b.dataset.mm||null));
 document.getElementById("btnMemoDone").onclick=memoFinish;
 document.getElementById("memoSave").onclick=memoSaveEdit;
 document.getElementById("memoDel").onclick=memoDelete;

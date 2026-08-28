@@ -108,7 +108,9 @@ def boundary_items(con, layer, bbox=None):
 def main(argv=None):
     ap = argparse.ArgumentParser(description="정적 번들 굽기")
     ap.add_argument("--region", default="adm_sigungu:5181000000", help="layer:code (기본 인제군)")
-    ap.add_argument("--zoom", nargs=2, type=int, default=[12, 16], metavar=("MIN", "MAX"))
+    # z18 까지 굽는다 — 10m 축척(z19~20)까지 실제 데이터로 버틴다.
+    #   그 위는 maplibre 가 z18 타일을 확대해 쓴다(MVT 4096 격자라 이미 0.15m 급이다).
+    ap.add_argument("--zoom", nargs=2, type=int, default=[12, 18], metavar=("MIN", "MAX"))
     ap.add_argument("--out", default="docs")   # GitHub Pages 의 main/docs 를 그대로 쓴다
     ap.add_argument("--extent", choices=["aoi", "region"], default="aoi",
                     help="굽는 범위 — aoi=연구지역만(기본) · region=시군구 전체")

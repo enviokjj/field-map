@@ -348,12 +348,17 @@ def main(argv=None):
             _check(res, "타일이 연구지역 범위 안", ok,
                    f"z12 x {txs[0] if txs else '-'}~{txs[-1] if txs else '-'} vs AOI {want[0]}~{want[1]}")
             n_tiles = sum(1 for _ in (static_dir / "tiles").rglob("*.pbf"))
-            _check(res, "번들이 과하지 않다", n_tiles < 4000, f"타일 {n_tiles:,}개")
+            mb = sum(f.stat().st_size for f in static_dir.rglob("*") if f.is_file()) / 1e6
+            # ★기준은 GitHub Pages 한도(사이트 1GB)다. z17 까지 구우면 타일이 4천을 넘는데
+            #   그건 정상이다 — 처음엔 4,000 으로 잡아 두고 스스로 걸렸다.
+            _check(res, "번들이 한도 안", mb < 800, f"타일 {n_tiles:,}개 · {mb:.1f}MB")
 
         for name, tok, why in (
             ("메모 기능", "MEMO_KEY", "지점을 눌러 글자를 남긴다"),
             ("메모 저장소", "localStorage", "서버가 없어 이 기기에만 남는다"),
             ("메모 내보내기", "memoExport", "GeoJSON 으로 빼내 다른 지도에서 연다"),
+            ("아이폰 내보내기 경로", "navigator.share",
+             "iOS(크롬 포함, 내부는 WebKit)는 a[download] 로 파일을 못 받는다 — 공유 시트가 정상 경로"),
             ("기존 메모 수정·삭제", "queryRenderedFeatures", "찍힌 도형을 눌러 고친다"),
             ("도형 그리기 3종", 'MEMO_MODES', "점·선·면"),
             ("그리는 중 미리보기", "draftRender", "찍은 점이 바로 보인다"),
