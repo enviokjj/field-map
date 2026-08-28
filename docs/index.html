@@ -81,16 +81,16 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
 #memoMenu{display:none;position:absolute;z-index:9;padding:5px;flex-direction:column;gap:2px;min-width:132px}
 #memoMenu button{width:100%;text-align:left}
 #memoMenu button.on{background:var(--ink);color:#fff}
+#memoMenu .mdiv{height:1px;background:var(--line);margin:3px 2px}
+#btnMemoClear.on{background:#8a1c2b;color:#fff}   /* 한 번 더 누르면 지워지는 상태 */
 @media (max-width:700px){#coord{display:none}}
 </style>
 </head>
 <body>
 <div id="map"></div>
 <div class="panel" id="ctl">
-  <button data-bm="osm">일반</button>
   <button data-bm="vworld">브이월드</button>
   <button data-bm="satellite">위성</button>
-  <button data-bm="topo" id="btnTopo" style="display:none">지형</button>
   <button id="btnAoi" class="sep" style="display:none" title="연구지역으로 이동">⛶ 연구지역</button>
   <button id="btnRoad" title="도로 중심선 — 확대해야 보입니다">도로</button>
   <button id="btnMemo" class="sep" title="눌러서 점·선·면을 고릅니다. 메모는 이 기기에만 저장됩니다">✎ 메모</button>
@@ -102,6 +102,9 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
   <button data-mm="line">╱ 선</button>
   <button data-mm="polygon">▱ 사각형</button>
   <button data-mm="">■ 끄기</button>
+  <div class="mdiv"></div>
+  <button id="btnMemoClear" style="display:none" title="이 기기에 저장된 메모를 모두 지웁니다">🗑 전체 삭제</button>
+  <button id="btnMemoUndo" style="display:none" title="방금 지운 메모를 되살립니다">↩ 삭제 되돌리기</button>
 </div>
 <div class="panel" id="memoEdit">
   <textarea id="memoText" placeholder="이 지점에 남길 메모"></textarea>
@@ -118,7 +121,7 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
 /* ══ 설정 — 여기 한 곳만 고친다 ═══════════════════════════════════════════════
    apiBase        이 앱 서버 주소. ""(빈 문자열)=페이지와 같은 출처.
                   다른 시스템의 페이지에서 부를 때만 "https://…" 절대주소를 넣는다.
-   hillshadeBase  '지형' 배경(5m DEM 음영기복)을 가진 원 게이트웨이 주소.
+   hillshadeBase  (안 쓴다) 배경지도는 브이월드·위성 둘뿐이라 음영기복 배경은 뺐다.
                   비워 두면 지형 버튼이 아예 안 뜬다(이 앱은 DEM 을 갖고 있지 않다).
    vworldKey      브이월드 인증키. ★키는 **접속 도메인에 묶인다** — 새 도메인에서 쓰려면
                   vworld.kr 에 그 도메인을 등록해야 타일이 온다.
@@ -164,18 +167,12 @@ function status(msg, warn){
 const vw = (layer, ext) =>
   `https://api.vworld.kr/req/wmts/1.0.0/${FIELD_CFG.vworldKey}/${layer}/{z}/{y}/{x}.${ext||"png"}`;
 const BASEMAPS = {
-  /* ★OSM 공개 타일 서버는 **쓰지 않는다**. 그쪽 사용정책이 앱 용도의 대량 사용을 금지하고,
-     넘으면 차단한다 — 화면에 "Rate limit exceeded" 로 나타난다(실제로 겪었다).
-     대신 V-World 의 밝은 지도(white)를 쓴다. 같은 사업자라 키·정책이 하나로 정리된다. */
-  osm:       { tiles:[vw("white")], attribution:"© VWorld · 국토교통부" },
+  /* ★배경지도는 **브이월드·위성 둘뿐**이다(요청). 종전의 '일반'·'지형'은 뺐다.
+     참고 — OSM 공개 타일 서버는 어차피 못 쓴다: 사용정책이 앱 용도의 대량 사용을
+     금지하고, 넘으면 "Rate limit exceeded" 로 차단한다(실제로 겪었다). */
   vworld:    { tiles:[vw("Base")], attribution:"© VWorld · 국토교통부" },
   satellite: { tiles:[vw("Satellite","jpeg")], labelTiles:[vw("Hybrid")], attribution:"© VWorld · 국토교통부" },
 };
-if(FIELD_CFG.hillshadeBase){
-  BASEMAPS.topo = { tiles:[FIELD_CFG.hillshadeBase.replace(/\/$/,"")+"/basemap/hillshade/{z}/{x}/{y}.png"],
-                    attribution:"전국 5m DEM 음영기복 · NGII" };
-  document.getElementById("btnTopo").style.display="";
-}
 let curBm = "vworld";
 
 const map = new maplibregl.Map({
@@ -415,6 +412,47 @@ function memoRender(){
   }
   const out=document.getElementById("btnMemoOut");
   if(out) out.style.display = fc.features.length ? "" : "none";
+  memoClearUI(fc.features.length);
+}
+
+/* ── 전체 삭제 ──────────────────────────────────────────────────────────────
+   ★메모는 이 기기의 localStorage 에만 있다 — 서버 어디에도 사본이 없어서
+     한 번 지우면 끝이다. 그래서 두 겹으로 막는다:
+       ① **두 번 눌러야** 지워진다(첫 번째는 무장만, 5초 뒤 저절로 풀린다)
+       ② 지운 내용을 메모리에 들고 있다가 **되돌릴 수 있다**(이 페이지가 열려 있는 동안)
+   ★window.confirm 을 쓰지 않는다 — prompt 가 모바일에서 막혀 "메모를 못 남긴다"가
+     됐던 것과 같은 이유다. 확인은 화면 안에서 받는다. */
+let memoTrash = null, clearArm = 0;
+function memoClearUI(n){
+  if(n === undefined) n = memoRead().features.length;
+  const c=document.getElementById("btnMemoClear"), u=document.getElementById("btnMemoUndo");
+  if(c){
+    c.style.display = n ? "" : "none";
+    c.textContent = clearArm ? `한 번 더 누르면 지웁니다 (${n})` : `🗑 전체 삭제 ${n}`;
+    c.classList.toggle("on", !!clearArm);
+  }
+  if(u) u.style.display = memoTrash ? "" : "none";
+}
+function memoClearAll(){
+  const fc=memoRead(), n=fc.features.length;
+  if(!n) return;
+  if(!clearArm){                                    // 1차 — 무장만 한다
+    clearArm = setTimeout(()=>{ clearArm=0; memoClearUI(); }, 5000);
+    memoClearUI(n);
+    status(`메모 ${n}개를 모두 지웁니다 — 한 번 더 누르세요. 이 기기에만 있는 자료입니다.`, true);
+    return;
+  }
+  clearTimeout(clearArm); clearArm=0;               // 2차 — 실제로 지운다
+  memoTrash = fc;
+  if(memoWrite({type:"FeatureCollection", features:[]})){
+    memoClose(); drawPts=[]; draftRender(); memoRender();
+    status(`메모 ${n}개를 지웠습니다 — ↩ 삭제 되돌리기 로 되살릴 수 있습니다`);
+  } else { memoTrash=null; memoClearUI(n); }        // 저장 실패면 되돌리기를 내걸지 않는다
+}
+function memoUndoClear(){
+  if(!memoTrash) return;
+  const fc=memoTrash, n=fc.features.length;
+  if(memoWrite(fc)){ memoTrash=null; memoRender(); status(`메모 ${n}개를 되살렸습니다`); }
 }
 function draftRender(){
   const src=map.getSource("draft"); if(!src) return;
@@ -462,6 +500,7 @@ function memoMenuToggle(){
   } else menu.style.display = "none";
   menu.querySelectorAll("[data-mm]").forEach(b=>
     b.classList.toggle("on", (b.dataset.mm||"") === (memoMode()||"")));
+  memoClearUI();                                    // 열 때마다 개수·되돌리기 상태 갱신
 }
 function memoPick(mode){
   document.getElementById("memoMenu").style.display="none";
@@ -724,6 +763,8 @@ document.getElementById("memoSave").onclick=memoSaveEdit;
 document.getElementById("memoDel").onclick=memoDelete;
 document.getElementById("memoClose").onclick=memoClose;
 document.getElementById("btnMemoOut").onclick=memoExport;
+document.getElementById("btnMemoClear").onclick=memoClearAll;
+document.getElementById("btnMemoUndo").onclick=memoUndoClear;
 gpsBtns().forEach(b=>b.onclick=gpsStart);
 map.on("dragstart",()=>{ if(gpsFollow){ gpsFollow=false; status("따라가기 해제 — 현위치 버튼을 다시 누르면 재개"); } });
 

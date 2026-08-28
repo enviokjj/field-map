@@ -501,6 +501,7 @@ def main(argv=None):
             ("큰 버튼 조건에 화면폭도", "(max-width:900px)",
              "pointer:coarse 만 보면 판정 안 되는 기기에서 안 뜬다"),
             ("사각형은 드래그", "rectBind", "두 번 누르는 방식은 '그리는 모양'이 아니다"),
+            ("메모 전체 삭제", "btnMemoClear", "두 번 눌러야 지워진다 · 되돌리기 있음"),
             ("회전 잠금", "disableRotation", "실수로 돌아가면 방향을 잃는다"),
             ("따라가기 해제 조건", 'map.on("dragstart"', "지도를 끌면 풀린다"),
         ):
@@ -517,6 +518,12 @@ def main(argv=None):
         _check(res, "GPS 상태 표시 배선",
                "const gpsMark" in html and html.count("gpsMark(") >= 2,
                "켤 때·끌 때 버튼 색이 바뀌어야 한다")
+        # ★배경지도는 브이월드·위성 둘뿐이다(요청). 버튼이 늘면 현장에서 헷갈린다.
+        _check(res, "배경지도는 둘뿐", html.count('data-bm="') == 2,
+               "브이월드·위성만 있어야 한다")
+        _check(res, "지운 배경지도의 버튼이 안 남았다",
+               'data-bm="topo"' not in html and 'data-bm="osm"' not in html,
+               "버튼만 남으면 눌렀을 때 아무 일도 안 일어난다")
 
         print("\n⑨ GPS 전제")
         _check(res, "HTTPS 아님을 먼저 알린다", "isSecureContext" in html,
