@@ -55,13 +55,12 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
        max-width:calc(100vw - 24px - env(safe-area-inset-left) - env(safe-area-inset-right))}
   #ctl::-webkit-scrollbar{display:none}
   #status{font-size:14px;padding:11px 16px}
-  /* ★바 버튼을 숨기지 않는다. 종전엔 숨기고 FAB 만 띄웠는데, 기기가 pointer:coarse 로
-     안 잡히면 **둘 다 사라져** 현위치를 아예 못 누른다(폰에서 실제로 그랬다).
-     둘 다 두면 최악이라도 버튼이 하나는 남는다. */
-  #gpsFab{display:flex}
 }
-/* 엄지로 누르는 현위치 버튼 — 터치 기기에서만 뜬다 */
-#gpsFab{display:none;position:fixed;z-index:7;
+/* 엄지로 누르는 현위치 버튼 — 화면 왼쪽 아래. **현위치는 이것 하나뿐이다.**
+   ★상단 바에도 두고 화면 크기로 갈랐더니, 판정이 갈리는 기기마다 결과가 달랐다:
+     처음엔 둘 다 사라졌고(pointer:coarse 미판정), 고친 뒤엔 바 버튼만 남아
+     "왼쪽 아래로 안 갔다"가 됐다. 조건을 없애고 **항상 뜨는 하나**로 만든다. */
+#gpsFab{display:flex;position:fixed;z-index:7;
   left:calc(14px + env(safe-area-inset-left));bottom:calc(20px + env(safe-area-inset-bottom));
   width:58px;height:58px;border-radius:50%;border:none;cursor:pointer;
   align-items:center;justify-content:center;font-size:24px;
@@ -96,9 +95,8 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
   <button id="btnRoad" title="도로 중심선 — 확대해야 보입니다">도로</button>
   <button id="btnMemo" class="sep" title="눌러서 점·선·면을 고릅니다. 메모는 이 기기에만 저장됩니다">✎ 메모</button>
   <button id="btnMemoOut" style="display:none" title="메모를 GeoJSON 파일로 내보내기">⤓</button>
-  <button id="btnGps" title="현위치 — HTTPS 에서만 동작합니다">◎ 현위치</button>
 </div>
-<button id="gpsFab" title="현위치" aria-label="현위치">◎</button>
+<button id="gpsFab" title="현위치 — HTTPS 에서만 동작합니다" aria-label="현위치">◎</button>
 <div class="panel" id="memoMenu">
   <button data-mm="point">● 점</button>
   <button data-mm="line">╱ 선</button>

@@ -497,7 +497,7 @@ def main(argv=None):
             ("터치 타깃 확대", "@media (pointer:coarse)", "44px — 손끝 접촉면 기준 최소값"),
             ("주소창 높이 대응", "100dvh", "100vh 는 모바일에서 출렁인다"),
             ("노치 안전영역", "env(safe-area-inset", "viewport-fit=cover 와 짝"),
-            ("엄지 현위치 버튼", 'id="gpsFab"', "작은 화면에서 추가로 뜬다"),
+            ("엄지 현위치 버튼", 'id="gpsFab"', "왼쪽 아래 · 현위치는 이것 하나뿐"),
             ("큰 버튼 조건에 화면폭도", "(max-width:900px)",
              "pointer:coarse 만 보면 판정 안 되는 기기에서 안 뜬다"),
             ("사각형은 드래그", "rectBind", "두 번 누르는 방식은 '그리는 모양'이 아니다"),
@@ -505,16 +505,18 @@ def main(argv=None):
             ("따라가기 해제 조건", 'map.on("dragstart"', "지도를 끌면 풀린다"),
         ):
             _check(res, name, tok in html, why)
-        # 버튼 두 개(바·FAB)가 같은 상태를 보여야 한다 — 한쪽만 바꾸면 어긋난다
+        # ★현위치 버튼은 **하나**여야 하고 **항상** 떠 있어야 한다.
+        #   바+FAB 둘로 두고 화면 조건으로 갈랐더니 기기마다 결과가 달라졌다 —
+        #   처음엔 pointer:coarse 미판정으로 **둘 다** 사라졌고, 그걸 고친 뒤엔
+        #   바 버튼만 남아 "왼쪽 아래로 안 갔다"가 됐다. 조건을 없앤 것을 굳힌다.
+        _check(res, "현위치는 왼쪽 아래 하나뿐", 'id="btnGps"' not in html,
+               "상단 바에도 현위치 버튼이 있으면 기기에 따라 그쪽만 보인다")
+        _check(res, "현위치 버튼이 조건 없이 뜬다", "#gpsFab{display:flex" in html,
+               "display:none 으로 시작하면 조건이 안 맞는 기기에서 사라진다")
         # ★`gpsMark(` 로 3개를 세려다 틀렸다 — 정의는 `gpsMark = (on) =>` 라 안 걸린다.
-        #   정의 존재 + 호출 2곳(켤 때·끌 때)으로 본다.
-        # ★바 버튼을 숨기면 안 된다 — 기기가 pointer:coarse 로 안 잡히면 FAB 도 안 떠서
-        #   현위치 버튼이 **둘 다 사라진다**(폰에서 실제로 그랬다).
-        _check(res, "바의 현위치 버튼을 숨기지 않는다", "#btnGps{display:none}" not in html,
-               "둘 다 사라지는 실패를 막는다")
-        _check(res, "GPS 버튼 상태 동기화",
+        _check(res, "GPS 상태 표시 배선",
                "const gpsMark" in html and html.count("gpsMark(") >= 2,
-               "바 버튼과 엄지 버튼이 같은 상태를 보여야 한다")
+               "켤 때·끌 때 버튼 색이 바뀌어야 한다")
 
         print("\n⑨ GPS 전제")
         _check(res, "HTTPS 아님을 먼저 알린다", "isSecureContext" in html,
