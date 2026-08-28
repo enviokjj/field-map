@@ -53,6 +53,7 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
 #map{position:fixed;inset:0}
 .panel{position:absolute;background:rgba(255,255,255,.97);border-radius:10px;box-shadow:var(--shadow);z-index:5}
 #ctl{top:12px;left:12px;padding:5px;display:flex;gap:2px;align-items:center;flex-wrap:wrap;max-width:calc(100vw - 24px)}
+#ctlR{top:12px;right:12px;padding:5px;display:flex;gap:2px;align-items:center}
 .panel button{border:none;background:none;color:var(--muted);font-size:var(--ui);font-weight:500;
   min-height:var(--tap);padding:7px 11px;border-radius:6px;cursor:pointer;white-space:nowrap}
 .panel button:hover{background:var(--raise);color:var(--ink)}
@@ -66,6 +67,7 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
 .maplibregl-ctrl-attrib{font-size:10px}
 /* 노치·홈바를 피한다(viewport-fit=cover 와 짝) */
 #ctl{top:calc(12px + env(safe-area-inset-top));left:calc(12px + env(safe-area-inset-left))}
+#ctlR{top:calc(12px + env(safe-area-inset-top));right:calc(12px + env(safe-area-inset-right))}
 #coord{bottom:calc(12px + env(safe-area-inset-bottom));right:calc(12px + env(safe-area-inset-right))}
 #status{bottom:calc(12px + env(safe-area-inset-bottom))}
 /* ★손가락 기준 — 마우스가 아니라 터치인 기기에서만 키운다(데스크톱 배치는 그대로).
@@ -77,9 +79,11 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
   /* 좁은 화면에서 상단 바는 **한 줄로 두고 옆으로 민다**(요청). 줄바꿈은 지도를 덮는다.
      ★밀린다는 표시가 없으면 오른쪽 버튼이 있는지조차 모른다 — 더 남았을 때만
        오른쪽 끝을 흐리게 한다(`.more`, 끝까지 밀면 사라진다). */
+  /* ★오른쪽 바(메모)와 겹치지 않게 왼쪽 바의 폭을 줄여 둔다 — 겹치면 버튼이 가려진다 */
   #ctl{gap:4px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;
        scroll-behavior:smooth;
-       max-width:calc(100vw - 24px - env(safe-area-inset-left) - env(safe-area-inset-right))}
+       max-width:calc(100vw - 36px - var(--ctlr,120px)
+                      - env(safe-area-inset-left) - env(safe-area-inset-right))}
   #ctl::-webkit-scrollbar{display:none}
   #ctl.more{-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 26px),transparent);
             mask-image:linear-gradient(to right,#000 calc(100% - 26px),transparent)}
@@ -123,9 +127,13 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
   <button data-bm="satellite">위성</button>
   <button id="btnAoi" class="sep" style="display:none" title="연구지역으로 이동">⛶ 연구지역</button>
   <button id="btnRoad" title="도로 중심선 — 확대해야 보입니다">도로</button>
-  <button id="btnMemo" class="sep" title="눌러서 점·선·면을 고릅니다. 메모는 이 기기에만 저장됩니다">✎ 메모</button>
-  <button id="btnMemoOut" style="display:none" title="메모를 GeoJSON 파일로 내보내기">⤓</button>
   <button id="btnOffline" class="sep" title="배경지도까지 내려받아 인터넷 없이 쓸 수 있게 합니다">⬇ 오프라인</button>
+</div>
+<!-- 메모·내보내기는 **오른쪽 위**로 뺐다 — 왼쪽 바는 지도를 고르는 곳,
+     오른쪽 바는 내가 남기는 것. 섞으면 왼쪽 바가 길어져 옆으로 밀린다. -->
+<div class="panel" id="ctlR">
+  <button id="btnMemo" title="눌러서 점·선·면을 고릅니다. 메모는 이 기기에만 저장됩니다">✎ 메모</button>
+  <button id="btnMemoOut" style="display:none" title="메모를 GeoJSON 파일로 내보내기">⤓</button>
 </div>
 <button id="gpsFab" title="현위치 — HTTPS 에서만 동작합니다" aria-label="현위치">◎</button>
 <div class="panel" id="memoMenu">
@@ -197,20 +205,18 @@ function status(msg, warn){
    ★배경을 바꿀 때 라벨 층도 **같이** 지운다 — 안 지우면 다음 배경 위에 옛 라벨이 남는다. */
 const vw = (layer, ext) =>
   `https://api.vworld.kr/req/wmts/1.0.0/${FIELD_CFG.vworldKey}/${layer}/{z}/{y}/{x}.${ext||"png"}`;
-/* ★배경지도를 **번들 안에서 먼저 읽는다**(docs/basemap · z8~16 · 5,892장 79MB).
-   인터넷이 끊겨도 배경이 남는다. z16 위에서는 브이월드 원본을 그 위에 겹쳐 선명하게
-   보고, 인터넷이 없으면 **그 겹침만 조용히 실패**해 z16 을 확대한 배경이 남는다.
-   ★도로·리 이름은 벡터라 확대해도 계속 날카롭다 — 흐려지는 건 배경 사진뿐이다. */
-const LOCAL_BM_MAXZ = 16;
-const bmLocal = (name, ext) => api(`/basemap/${name}/{z}/{y}/{x}.${ext}`);
+/* ★배경지도는 **브이월드 원본을 그대로 본다**. 한때 번들 타일(docs/basemap)을 직접
+   가리켰는데, 그러면 구워 둔 연구지역 밖이 **온라인에서도 빈 화면**이 됐다.
+   전국 어디를 봐도 배경이 나와야 한다 — 기본은 온라인이다.
+   ★오프라인은 주소를 바꾸는 대신 **서비스 워커가 받쳐 준다**: '오프라인 준비' 가
+     번들 타일을 **브이월드 주소를 열쇠로** 저장해 두어, 인터넷이 없을 때 같은 요청이
+     그 자리에서 응답된다(sw.js 의 BAKE). 화면 쪽은 온라인과 똑같이 동작한다. */
 const BASEMAPS = {
   /* ★배경지도는 **브이월드·위성 둘뿐**이다(요청). 종전의 '일반'·'지형'은 뺐다.
      참고 — OSM 공개 타일 서버는 어차피 못 쓴다: 사용정책이 앱 용도의 대량 사용을
      금지하고, 넘으면 "Rate limit exceeded" 로 차단한다(실제로 겪었다). */
-  vworld:    { tiles:[bmLocal("Base","png")], hi:[vw("Base")],
-               attribution:"© VWorld · 국토교통부" },
-  satellite: { tiles:[bmLocal("Satellite","jpeg")], hi:[vw("Satellite","jpeg")],
-               labelTiles:[bmLocal("Hybrid","png")], hiLbl:[vw("Hybrid")],
+  vworld:    { tiles:[vw("Base")], attribution:"© VWorld · 국토교통부" },
+  satellite: { tiles:[vw("Satellite","jpeg")], labelTiles:[vw("Hybrid")],
                attribution:"© VWorld · 국토교통부" },
 };
 let curBm = "vworld";
@@ -237,8 +243,8 @@ const map = new maplibregl.Map({
     //   `glyphsUrl is not set` 이 난다 — 그러면 숫자가 섞인 라벨 하나 때문에 그 타일의
     //   심볼 전체가 실패해 한글 지명까지 통째로 사라진다(원 저장소에서 실제로 겪었다).
     glyphs: api("/fonts/{fontstack}/{range}.pbf"),
-    sources:{ basemap:{type:"raster", tiles:BASEMAPS[curBm].tiles, tileSize:256,
-                       maxzoom:LOCAL_BM_MAXZ, attribution:BASEMAPS[curBm].attribution} },
+    sources:{ basemap:{type:"raster", tiles:BASEMAPS[curBm].tiles, tileSize:256, maxzoom:18,
+                       attribution:BASEMAPS[curBm].attribution} },
     layers:[{id:"basemap", type:"raster", source:"basemap"}] }
 });
 map.touchZoomRotate.disableRotation();
@@ -248,30 +254,17 @@ map.addControl(new maplibregl.ScaleControl({maxWidth:110, unit:"metric"}), "bott
 function setBasemap(key){
   const b=BASEMAPS[key]; if(!b) return;
   curBm=key;
-  ["basemap-lbl-hi","basemap-lbl","basemap-hi","basemap"].forEach(id=>{
+  ["basemap-lbl","basemap"].forEach(id=>{
     if(map.getLayer(id)) map.removeLayer(id);
     if(map.getSource(id)) map.removeSource(id);
   });
   const first=(map.getStyle().layers[0]||{}).id;      // 항상 맨 아래(도로·경계 밑)
-  /* 아래→위 순으로 넣는다: 번들 배경 → (z16 위)원본 배경 → 번들 지명 → 원본 지명.
-     ★원본 두 겹은 인터넷이 없으면 타일이 안 와서 그냥 안 그려진다 — 아래 번들 배경이
-       남으므로 화면이 비지 않는다. 이것이 오프라인에서 배경이 살아 있는 이유다. */
-  const HI = LOCAL_BM_MAXZ + 0.5;
-  map.addSource("basemap",{type:"raster", tiles:b.tiles, tileSize:256,
-                           maxzoom:LOCAL_BM_MAXZ, attribution:b.attribution});
+  map.addSource("basemap",{type:"raster", tiles:b.tiles, tileSize:256, maxzoom:18,
+                           attribution:b.attribution});
   map.addLayer({id:"basemap", type:"raster", source:"basemap"}, first);
-  if(b.hi){
-    map.addSource("basemap-hi",{type:"raster", tiles:b.hi, tileSize:256, maxzoom:18});
-    map.addLayer({id:"basemap-hi", type:"raster", source:"basemap-hi", minzoom:HI}, first);
-  }
   if(b.labelTiles){
-    map.addSource("basemap-lbl",{type:"raster", tiles:b.labelTiles, tileSize:256,
-                                 maxzoom:LOCAL_BM_MAXZ});
+    map.addSource("basemap-lbl",{type:"raster", tiles:b.labelTiles, tileSize:256, maxzoom:18});
     map.addLayer({id:"basemap-lbl", type:"raster", source:"basemap-lbl"}, first);
-    if(b.hiLbl){
-      map.addSource("basemap-lbl-hi",{type:"raster", tiles:b.hiLbl, tileSize:256, maxzoom:18});
-      map.addLayer({id:"basemap-lbl-hi", type:"raster", source:"basemap-lbl-hi", minzoom:HI}, first);
-    }
   }
   document.querySelectorAll("#ctl [data-bm]").forEach(x=>x.classList.toggle("on", x.dataset.bm===key));
 }
@@ -554,9 +547,11 @@ function memoMenuToggle(){
   const open = menu.style.display !== "flex";
   if(open){                                   // 버튼 바로 아래에 붙인다
     const r=btn.getBoundingClientRect();
-    menu.style.left = `${Math.max(8, r.left)}px`;
-    menu.style.top  = `${r.bottom + 6}px`;
+    menu.style.left = "0px"; menu.style.top = `${r.bottom + 6}px`;
     menu.style.display = "flex";
+    // ★오른쪽 위로 옮기면서 메뉴가 화면 밖으로 나갈 수 있게 됐다 — 폭을 재고 밀어 넣는다
+    const w = menu.getBoundingClientRect().width;
+    menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - w - 8))}px`;
   } else menu.style.display = "none";
   menu.querySelectorAll("[data-mm]").forEach(b=>
     b.classList.toggle("on", (b.dataset.mm||"") === (memoMode()||"")));
@@ -863,6 +858,8 @@ map.on("error",(e)=>{
 /* 상단 바가 더 밀 수 있는 상태인지 — 그때만 오른쪽 끝을 흐리게 한다 */
 function ctlOverflow(){
   const c=document.getElementById("ctl"); if(!c) return;
+  const r=document.getElementById("ctlR");
+  if(r) document.documentElement.style.setProperty("--ctlr", `${Math.ceil(r.getBoundingClientRect().width)}px`);
   const more = c.scrollWidth - c.clientWidth - c.scrollLeft > 4;
   c.classList.toggle("more", more);
 }

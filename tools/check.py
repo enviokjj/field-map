@@ -581,9 +581,17 @@ def main(argv=None):
         # ★앱 캐시와 타일 캐시를 나눈다 — 안 나누면 index.html 한 줄에 79MB 를 다시 받는다.
         _check(res, "앱 캐시와 타일 캐시가 분리", "fieldmap-app-" in swt and "fieldmap-tiles-" in swt,
                "한 판으로 묶으면 작은 수정에 배경지도 79MB 를 통째로 다시 받는다")
-        _check(res, "우리 파일은 캐시 먼저", "caches.open(CACHE)" in swt and "c.match(req)" in swt)
-        _check(res, "배경지도 원본은 네트워크 먼저", 'url.hostname === "api.vworld.kr"' in swt,
-               "온라인에서는 최신을 쓰고, 끊기면 캐시로 떨어진다")
+        # ★온라인이면 **항상 온라인**. 우리 파일을 캐시 먼저로 두면 온라인인데 옛 파일이 나온다.
+        _check(res, "온라인이면 네트워크 먼저",
+               "const res = await fetch(req);" in swt and "await c.match(req)) || Response.error()" in swt,
+               "캐시 먼저면 온라인에서도 옛 파일이 나온다")
+        _check(res, "배경지도 타일만 캐시 먼저",
+               "if (mine && isTile(url.pathname))" in swt,
+               "79MB 를 매번 다시 받을 이유는 없다 — 이건 안 바뀐다")
+        _check(res, "브이월드도 같은 규칙", 'url.hostname !== "api.vworld.kr"' in swt,
+               "끊기면 저장해 둔 타일로 떨어진다")
+        _check(res, "번들에서 받아 저장한다", "BASE + rel" in swt and "c.put(key" in swt,
+               "브이월드에 5,892번 두드리면 제한에 걸린다 — 번들에서 받는다")
         _check(res, "오프라인 준비 버튼", 'id="btnOffline"' in html and "BAKE" in code,
                "79MB 를 첫 방문에 조용히 끌어가지 않는다 — 누를 때 받는다")
 
@@ -597,11 +605,45 @@ def main(argv=None):
                        if _.is_file() and _.suffix in (".png", ".jpeg"))
             _check(res, "목록과 실제 파일이 맞는다", real == n_bm - (1 if n_bm else 0) or real == n_bm,
                    f"목록 {n_bm:,} vs 실제 {real:,}")
-            _check(res, "배경지도를 번들에서 읽는다",
-                   'bmLocal("Base","png")' in code and "LOCAL_BM_MAXZ" in code,
-                   "원격만 보면 인터넷이 끊길 때 배경이 통째로 회색이 된다")
-            _check(res, "z16 위는 원본을 겹친다", 'id:"basemap-hi"' in code,
-                   "온라인에선 선명하게, 오프라인에선 그 겹침만 실패하고 배경은 남는다")
+            # ★화면은 **브이월드 원본**을 봐야 한다. 한때 번들 타일을 직접 가리켰더니
+            #   구워 둔 연구지역 밖이 **온라인에서도 빈 화면**이 됐다(실제로 그렇게 됐다).
+            #   오프라인은 주소를 바꾸는 대신 서비스 워커가 받쳐 준다.
+            _check(res, "배경지도는 원본 주소를 본다",
+                   'vw("Base")' in code and "bmLocal" not in code,
+                   "번들 타일을 직접 가리키면 구운 범위 밖이 온라인에서도 빈다")
+            _check(res, "목록에 원본 주소 틀이 있다",
+                   str(mj.get("remote", "")).startswith("https://api.vworld.kr/"),
+                   "이게 없으면 저장해 둔 타일의 열쇠가 화면 요청과 안 맞는다")
+            _check(res, "타일만 목록에 있다",
+                   all(t.endswith((".png", ".jpeg", ".jpg")) for t in mj.get("tiles", [])),
+                   "manifest.json 자신이 섞이면 타일 수가 틀어진다")
+            # ★열쇠가 실제로 맞는지 **돌려서** 확인한다 — 문자열만 보면 못 잡는다.
+            #   화면이 부르는 주소와 서비스 워커가 저장하는 주소가 같아야 한다.
+            try:
+                import dukpy
+                fn = _re2.search(r"function remoteUrl\(p\) \{.*?\n    \}", swt, _re2.S)
+                key = _re2.search(r'vworldKey:\s*"([^"]+)"', html).group(1)
+                got = dukpy.evaljs(
+                    f'var remote={json.dumps(mj.get("remote",""))};'
+                    + fn.group(0).replace("    ", "")
+                    + 'remoteUrl("basemap/Base/16/25290/56084.png");') if fn else None
+                want = (f"https://api.vworld.kr/req/wmts/1.0.0/{key}"
+                        "/Base/16/25290/56084.png")
+                _check(res, "저장 열쇠 = 화면이 부르는 주소", got == want,
+                       f"{got}" if got != want else "일치")
+            except Exception as e:                                # noqa: BLE001
+                _check(res, "저장 열쇠 = 화면이 부르는 주소", False, f"확인 실패: {e}")
+
+        # ★메모·내보내기는 **오른쪽 위**로 뺐다 — 왼쪽 바는 지도를 고르는 곳,
+        #   오른쪽 바는 내가 남기는 것. 섞으면 왼쪽 바가 길어져 옆으로 밀린다.
+        _check(res, "메모·내보내기가 오른쪽 위", 'id="ctlR"' in html
+               and html.index('id="ctlR"') < html.index('id="btnMemo"'),
+               "왼쪽 바에 남아 있으면 배경지도 버튼이 밀린다")
+        _check(res, "왼쪽 바가 오른쪽 바를 피한다", "var(--ctlr" in html and "--ctlr" in code,
+               "겹치면 버튼이 가려진다 — 오른쪽 바 폭을 재서 왼쪽 폭을 줄인다")
+        _check(res, "메모 메뉴가 화면 밖으로 안 나간다",
+               "window.innerWidth - w - 8" in code,
+               "오른쪽 끝 버튼 아래에 펼치면 메뉴가 잘린다")
 
         print("\n⑪ 폰·태블릿 크기 조정")
         # ★종전엔 12px/14px 두 단계뿐이라 폰에선 작고 큰 태블릿에선 화면에 비해 더 작았다.

@@ -8,10 +8,14 @@
  * 이라, 10분만 지나면 페이지 자체를 다시 받아야 하는데 그게 안 된다.
  * 서비스 워커는 그 파일들을 10분짜리가 아니라 **영구 저장소**에 넣는다.
  *
- * 두 가지 규칙
- * -----------
- *   같은 출처(우리 파일)  : 캐시 먼저 — 오프라인에서도 즉시 뜬다
- *   브이월드(z16 위 원본) : 네트워크 먼저, 실패하면 캐시 — 온라인에선 항상 최신
+ * 규칙 — **온라인이면 항상 온라인, 끊기면 오프라인**
+ * ------------------------------------------------
+ *   우리 파일·브이월드  : 네트워크 먼저, 실패하면 캐시
+ *   배경지도 타일(79MB) : 캐시 먼저 (한 번 받으면 안 바뀐다 — 매번 받을 이유가 없다)
+ *
+ * ★한때 우리 파일을 캐시 먼저로 뒀는데, 그러면 온라인인데도 **옛 파일이 나온다**.
+ *   기본은 온라인이다. 네트워크가 살아 있으면 언제나 그쪽을 쓴다.
+ *   (GitHub Pages 가 max-age=600 을 주므로 브라우저 HTTP 캐시가 중복 왕복은 막아 준다)
  *
  * ★배경지도 z8~16 은 번들에 들어 있지만(docs/basemap), **본 적 없는 타일은 캐시에 없다**.
  *   화면의 '오프라인 준비' 가 manifest.json 을 읽어 5,892장을 한 번에 저장한다.
@@ -70,30 +74,29 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
-  if (url.origin === self.location.origin) {          // 우리 파일 — 캐시 먼저
+  const mine = url.origin === self.location.origin;
+  if (!mine && url.hostname !== "api.vworld.kr") return;   // 그 밖은 손대지 않는다
+
+  // 배경지도 타일만 캐시 먼저 — 79MB 를 매번 다시 받을 이유가 없다
+  if (mine && isTile(url.pathname)) {
     e.respondWith((async () => {
-      const c = await caches.open(isTile(url.pathname) ? TILES : CACHE);
-      const hit = await c.match(req);
-      if (hit) return hit;
-      const res = await fetch(req);
-      if (res && res.ok) c.put(req, res.clone());
-      return res;
+      const c = await caches.open(TILES);
+      return (await c.match(req)) || fetch(req);
     })());
     return;
   }
 
-  if (url.hostname === "api.vworld.kr") {             // 배경지도 원본 — 네트워크 먼저
-    e.respondWith((async () => {
-      const c = await caches.open(CACHE);
-      try {
-        const res = await fetch(req);
-        if (res && res.ok) c.put(req, res.clone());
-        return res;
-      } catch (err) {
-        return (await c.match(req)) || Response.error();
-      }
-    })());
-  }
+  // 나머지는 전부 **네트워크 먼저**. 끊겼을 때만 저장해 둔 것을 쓴다.
+  e.respondWith((async () => {
+    const c = await caches.open(mine ? CACHE : TILES);
+    try {
+      const res = await fetch(req);
+      if (res && res.ok) c.put(req, res.clone());
+      return res;
+    } catch (err) {
+      return (await c.match(req)) || Response.error();
+    }
+  })());
 });
 
 /* '오프라인 준비' — 배경지도 5,892장을 한 번에 저장하고 진행률을 알려 준다. */
@@ -102,21 +105,34 @@ self.addEventListener("message", (e) => {
   e.waitUntil((async () => {
     const send = (m) => e.source && e.source.postMessage(m);
     const c = await caches.open(TILES);          // 배경지도는 타일 캐시에 담는다
-    let list = [];
+    let list = [], remote = "";
     try {
       const r = await fetch(BASE + "basemap/manifest.json", {cache: "reload"});
-      list = (await r.json()).tiles || [];
+      const m = await r.json();
+      list = m.tiles || []; remote = m.remote || "";
     } catch (err) { return send({type: "BAKE_DONE", ok: 0, total: 0, err: "목록을 못 읽었다"}); }
+    /* basemap/Base/16/25290/56084.png → 화면이 실제로 부르는 **브이월드 주소**.
+       ★열쇠를 이렇게 맞춰야 오프라인에서 같은 요청이 캐시에 걸린다. 번들 경로로만
+         저장하면 화면은 브이월드를 부르므로 저장해 둔 것이 **쓰이지 않는다**. */
+    function remoteUrl(p) {
+      const m = /^basemap\/([^/]+)\/(\d+)\/(\d+)\/(\d+)\.(\w+)$/.exec(p);
+      if (!m || !remote) return null;
+      return remote.replace("{layer}", m[1]).replace("{z}", m[2])
+                   .replace("{y}", m[3]).replace("{x}", m[4]).replace("{ext}", m[5]);
+    }
     let ok = 0, fail = 0;
     const LANES = 6;                     // 폰에서 너무 많이 열면 오히려 느려진다
     let i = 0;
     async function lane() {
       while (i < list.length) {
-        const p = BASE + list[i++];
+        const rel = list[i++];
+        const key = remoteUrl(rel);
+        if (!key) { ok++; continue; }                 // manifest.json 자신 등
         try {
-          if (!(await c.match(p))) {
-            const res = await fetch(p);
-            if (res && res.ok) await c.put(p, res.clone()); else fail++;
+          if (!(await c.match(key))) {
+            const res = await fetch(BASE + rel);      // 번들에서 받아
+            if (res && res.ok) await c.put(key, res.clone());   // 원본 주소로 저장
+            else fail++;
           }
           ok++;
         } catch (err) { fail++; }

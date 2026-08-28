@@ -146,11 +146,18 @@ def main(argv=None):
                       f"{i/max(time.time()-t0,0.1):.0f}장/s")
 
     # ── 목록 — 화면의 '오프라인 준비' 가 이걸 읽어 한 번에 저장한다 ──────────
+    # ★목록에 manifest.json 자신이 섞이면 안 된다 — 타일이 아닌데 타일로 세어진다.
     files = sorted(str(p.relative_to(out)).replace(os.sep, "/")
-                   for p in (out / "basemap").rglob("*") if p.is_file())
+                   for p in (out / "basemap").rglob("*")
+                   if p.is_file() and p.suffix in (".png", ".jpeg", ".jpg"))
     total = sum((out / f).stat().st_size for f in files)
+    # ★`remote` 가 핵심이다. 화면은 **브이월드 원본 주소**를 그대로 보고(온라인 = 전국),
+    #   '오프라인 준비' 는 여기 있는 틀로 원본 주소를 만들어 **그 주소를 열쇠로** 번들
+    #   타일을 저장한다. 그래서 인터넷이 없을 때 같은 요청이 그 자리에서 응답된다.
+    #   (번들에서 받으므로 브이월드에 5,892번 두드리지 않는다 — 제한에 걸리지 않는다)
     (out / "basemap" / "manifest.json").write_text(json.dumps(
-        {"tiles": files, "bytes": total, "zoom": a.zoom, "layers": [n for n, _ in want]},
+        {"tiles": files, "bytes": total, "zoom": a.zoom, "layers": [n for n, _ in want],
+         "remote": f"https://api.vworld.kr/req/wmts/1.0.0/{key}/{{layer}}/{{z}}/{{y}}/{{x}}.{{ext}}"},
         ensure_ascii=False), encoding="utf8")
     per = {}
     for f in files:
