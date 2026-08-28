@@ -227,18 +227,34 @@ def main(argv=None):
         _check(res, "타일이 유효한 MVT", ok and lays and lays[0][0] == "road_line",
                f"{tp} · {len(data):,}B · {lays}" if ok else f"HTTP {st} {tp}")
 
-        print("\n⑤ 경계")
-        st, cat = _get(base, "/boundary/layers")
-        regs = [l for g in (cat or {}).get("groups", []) for l in g["layers"]] if st == 200 else []
-        _check(res, "/boundary/layers", st == 200 and len(regs) == 7,
-               f"{len(regs)}종 " + ", ".join(f"{l['label']}{l['count']:,}" for l in regs[:4]))
-        st, gj = _get(base, "/boundary/adm_sigungu/items")
+        print("\n⑤ 연구지역(AOI) · 리")
+        st, gj = _get(base, "/aoi/items")
         feats = (gj or {}).get("features", []) if st == 200 else []
-        _check(res, "시군구 items", st == 200 and len(feats) > 200, f"{len(feats)}건")
-        bad = [f["properties"]["code"] for f in feats
+        _check(res, "AOI 응답", st == 200 and len(feats) >= 1,
+               ", ".join(f"{f['properties']['name']}({f['properties'].get('km2')}km²)"
+                         for f in feats) if feats else f"HTTP {st}")
+        # ★bbox 를 실어 보낸다 — 서버 모드에서 리는 전국 15,161건이라 bbox 없이는 413 이다
+        #   (정적 모드에선 쿼리가 무시되고 미리 잘라 둔 파일이 온다). 페이지도 같은 방식이다.
+        rib = ""
+        if feats:
+            xs = [c[0] for f in feats for r in f["geometry"]["coordinates"] for c in r]
+            ys = [c[1] for f in feats for r in f["geometry"]["coordinates"] for c in r]
+            rib = f"?bbox={min(xs):.5f},{min(ys):.5f},{max(xs):.5f},{max(ys):.5f}"
+        st, gj = _get(base, f"/boundary/adm_ri/items{rib}")
+        ri = (gj or {}).get("features", []) if st == 200 else []
+        # ★건수 기준은 모드마다 다르다 — 서버 모드는 AOI 범위만(인제 22건),
+        #   정적 모드는 인제군 전체를 구워 둔다(235건). 둘 다 만족하는 하한만 본다.
+        _check(res, "리 응답", st == 200 and len(ri) >= 10, f"{len(ri)}건")
+        bad = [f["properties"]["code"] for f in ri
                if not isinstance(f["properties"].get("lon"), (int, float))]
-        _check(res, "라벨 대표점(lon/lat) 전건", not bad,
-               "폴리곤에 symbol 을 얹으면 섬마다 지명이 반복된다" if not bad else f"누락 {len(bad)}")
+        _check(res, "리 라벨 대표점 전건", not bad,
+               "폴리곤에 symbol 을 얹으면 파트마다 지명이 반복된다" if not bad else f"누락 {len(bad)}")
+        # ★`riLoad()` 문자열을 찾으면 인자를 붙이는 순간 깨진다(실제로 깨졌다) — 정의로 본다
+        _check(res, "리는 토글 없이 상시",
+               "function riLoad" in html and "RI_MINZ" in html and "await riLoad(" in html)
+        _check(res, "연구지역 선택 도구는 제거됨",
+               "regionBar" not in html and "rgShow" not in html,
+               "이 화면은 정해진 연구지역을 확인하는 용도다")
 
         print("\n⑥ 읽기 전용")
         src = (ROOT / "server" / "app.py").read_text(encoding="utf8")
@@ -246,7 +262,35 @@ def main(argv=None):
         _check(res, "쓰기 엔드포인트 없음", not writes, f"발견: {writes}" if writes else
                "GET 만 — 외부에 열어도 되는 근거")
 
-        print("\n⑦ GPS 전제")
+        print("\n⑦ 도로 가시성")
+        import re as _re
+        col = _re.search(r'const ROAD_COLOR\s*=\s*"([^"]+)"', html)
+        _check(res, "도로 색이 상수 한 곳에", bool(col), col.group(1) if col else "없음")
+        # 배경 4종이 쓰는 색(노랑·흰색·초록·베이지)과 겹치면 안 보인다
+        _check(res, "배경과 겹치지 않는 색", bool(col) and col.group(1).upper() not in
+               ("#FFFFFF", "#FFFF00", "#FFD400", "#C2412B"), "브이월드 도로는 노랑/주황이다")
+        w = _re.search(r'"line-color":ROAD_COLOR[^}]*?"line-width":\["interpolate",\["linear"\],\["zoom"\],12,([\d.]+)', html, _re.S)
+        _check(res, "z12 선 굵기 ≥1.2px", bool(w) and float(w.group(1)) >= 1.2,
+               f"{w.group(1)}px" if w else "못 읽음")
+
+        print("\n⑧ 모바일·태블릿")
+        for name, tok, why in (
+            ("터치 타깃 확대", "@media (pointer:coarse)", "44px — 손끝 접촉면 기준 최소값"),
+            ("주소창 높이 대응", "100dvh", "100vh 는 모바일에서 출렁인다"),
+            ("노치 안전영역", "env(safe-area-inset", "viewport-fit=cover 와 짝"),
+            ("엄지 현위치 버튼", 'id="gpsFab"', "터치 기기에서만 뜬다"),
+            ("회전 잠금", "disableRotation", "실수로 돌아가면 방향을 잃는다"),
+            ("따라가기 해제 조건", 'map.on("dragstart"', "지도를 끌면 풀린다"),
+        ):
+            _check(res, name, tok in html, why)
+        # 버튼 두 개(바·FAB)가 같은 상태를 보여야 한다 — 한쪽만 바꾸면 어긋난다
+        # ★`gpsMark(` 로 3개를 세려다 틀렸다 — 정의는 `gpsMark = (on) =>` 라 안 걸린다.
+        #   정의 존재 + 호출 2곳(켤 때·끌 때)으로 본다.
+        _check(res, "GPS 버튼 상태 동기화",
+               "const gpsMark" in html and html.count("gpsMark(") >= 2,
+               "바 버튼과 엄지 버튼이 같은 상태를 보여야 한다")
+
+        print("\n⑨ GPS 전제")
         _check(res, "HTTPS 아님을 먼저 알린다", "isSecureContext" in html,
                "안 막으면 '눌러도 아무 반응이 없다'가 된다")
         _check(res, "권한 거부·타임아웃을 구분해 알린다",

@@ -1,0 +1,1 @@
+{"type": "FeatureCollection", "features": [{"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [[[128.26394, 37.845327], [128.266215, 37.978139], [128.078621, 37.980009], [128.076683, 37.847188], [128.26394, 37.845327]]]}, "properties": {"km2": 243.1, "name": "인제 훈련", "built": "2026-08-20"}}]}

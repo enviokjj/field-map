@@ -221,6 +221,44 @@ def boundary_feature(layer: str, code: str):
             "bbox_4326": [row["x1"], row["y1"], row["x2"], row["y2"]]}
 
 
+@app.get("/aoi/items", tags=["연구지역"])
+def aoi_items(names: str = Query("인제 훈련", description="연구지역 이름(쉼표 구분). 빈 값이면 전부"),
+              bbox: str | None = Query(None, description="minx,miny,maxx,maxy (4326)")):
+    """서버에 **등록된 실제 연구지역**(catalog.asset kind='aoi_cube' 의 footprint).
+
+    ★같은 이름으로 여러 번 구축된 것이 있다 — 이름별 **최신 하나**만 준다
+      (인제는 '인제 훈련' 이 3번, '인제_test2' 가 5번 있었다).
+    """
+    where, params = ["a.kind='aoi_cube'", "a.properties->>'name' IS NOT NULL"], {}
+    nm = [x.strip() for x in names.split(",") if x.strip()]
+    if nm:
+        where.append("a.properties->>'name' = ANY(:names)")
+        params["names"] = nm
+    if bbox:
+        x1, y1, x2, y2 = _bbox(bbox)
+        params |= {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
+        where.append("a.footprint && ST_Transform(ST_MakeEnvelope(:x1,:y1,:x2,:y2,4326),5186)")
+    sql = text(f"""
+        SELECT jsonb_build_object('type','FeatureCollection',
+          'features', coalesce(jsonb_agg(f ORDER BY nm), '[]'::jsonb))::text
+        FROM (
+          SELECT nm, jsonb_build_object('type','Feature',
+            'geometry', ST_AsGeoJSON(ST_Transform(fp, 4326), 6)::jsonb,
+            'properties', jsonb_build_object('name', nm,
+              'km2', round((ST_Area(fp)/1e6)::numeric, 1),
+              'built', to_char(at, 'YYYY-MM-DD'))) AS f
+          FROM (
+            SELECT DISTINCT ON (a.properties->>'name')
+                   a.properties->>'name' AS nm, a.footprint AS fp, a.acquired_at AS at
+            FROM catalog.asset a
+            WHERE {' AND '.join(where)}
+            ORDER BY a.properties->>'name', a.acquired_at DESC
+          ) t) s""")
+    with engine.connect() as con:
+        return Response(content=con.execute(sql, params).scalar(),
+                        media_type="application/geo+json")
+
+
 @app.get("/healthz", tags=["운영"])
 def healthz():
     with engine.connect() as con:

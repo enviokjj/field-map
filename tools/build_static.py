@@ -111,6 +111,8 @@ def main(argv=None):
     ap.add_argument("--zoom", nargs=2, type=int, default=[12, 16], metavar=("MIN", "MAX"))
     ap.add_argument("--out", default="docs")   # GitHub Pages 의 main/docs 를 그대로 쓴다
     ap.add_argument("--pad", type=float, default=0.05, help="지역 bbox 를 이만큼(도) 넓혀 굽는다")
+    ap.add_argument("--aoi", default="인제 훈련",
+                    help="담을 연구지역 이름(쉼표 구분). 빈 값이면 범위 안 전부")
     ap.add_argument("--page-only", action="store_true",
                     help="페이지·폰트만 web/ → out/ 으로 복사한다. DB 불필요, 타일·경계는 그대로 둔다")
     a = ap.parse_args(argv)
@@ -184,33 +186,51 @@ def main(argv=None):
             total_b += zb; n_written += zn
             print(f"  z{z}: {zn:>6,} 타일 {zb/1e6:>6.1f}MB  (빈 타일 제외)")
 
-        # ── 경계 ─────────────────────────────────────────────────────────────
-        (out / "boundary").mkdir(parents=True, exist_ok=True)
-        groups = {"adm": [], "water": []}
-        bnd_b = 0
-        for ly, label in LAYER_LABELS.items():
-            gj = boundary_items(con, ly, None if ly in NATIONWIDE else (W, S, E, N))
-            d = out / "boundary" / ly
-            d.mkdir(parents=True, exist_ok=True)
-            (d / "items").write_text(gj, encoding="utf8")
-            bnd_b += len(gj.encode())
-            n = json.loads(gj)["features"]
-            # ★needs_bbox=false 로 굽는다. 이미 지역 범위로 잘라 놨으니 화면이 이동할 때마다
-            #   다시 받을 이유가 없다(정적이라 어차피 같은 파일이 온다).
-            (groups["adm"] if ly.startswith("adm_") else groups["water"]).append(
-                {"layer": ly, "label": label, "count": len(n), "needs_bbox": False})
-            print(f"  {label:<7} {len(n):>6,}건 {len(gj)/1e6:>5.2f}MB"
-                  + ("  (전국)" if ly in NATIONWIDE else "  (지역)"))
-        (out / "boundary" / "layers").write_text(json.dumps(
-            {"groups": [{"group": "adm", "label": "행정구역", "layers": groups["adm"]},
-                        {"group": "water", "label": "수자원 단위지도", "layers": groups["water"]}]},
-            ensure_ascii=False), encoding="utf8")
+        # ── 연구지역(AOI) — 서버에 실제로 등록된 것 ──────────────────────────
+        #   catalog.asset(kind='aoi_cube') 의 footprint 가 그 연구지역의 범위다.
+        #   ★같은 이름으로 여러 번 구축된 것이 있다 — **이름별 최신 하나**만 쓴다
+        #     (인제는 '인제 훈련' 이 3번, '인제_test2' 가 5번 있었다).
+        aoi = con.execute(text("""
+            SELECT jsonb_build_object('type','FeatureCollection',
+              'features', coalesce(jsonb_agg(f ORDER BY nm), '[]'::jsonb))::text
+            FROM (
+              SELECT nm, jsonb_build_object('type','Feature',
+                'geometry', ST_AsGeoJSON(ST_Transform(fp, 4326), 6)::jsonb,
+                'properties', jsonb_build_object(
+                  'name', nm, 'km2', round((ST_Area(fp)/1e6)::numeric, 1),
+                  'built', to_char(at, 'YYYY-MM-DD'))) AS f
+              FROM (
+                SELECT DISTINCT ON (a.properties->>'name')
+                       a.properties->>'name' AS nm, a.footprint AS fp, a.acquired_at AS at
+                FROM catalog.asset a
+                WHERE a.kind='aoi_cube' AND a.properties->>'name' IS NOT NULL
+                  AND a.footprint && ST_Transform(ST_MakeEnvelope(:x1,:y1,:x2,:y2,4326), 5186)
+                  AND (:names IS NULL OR a.properties->>'name' = ANY(:names))
+                ORDER BY a.properties->>'name', a.acquired_at DESC
+              ) t
+            ) s"""), {"x1": W, "y1": S, "x2": E, "y2": N,
+              "names": [x.strip() for x in a.aoi.split(",") if x.strip()] or None}).scalar()
+        (out / "aoi").mkdir(parents=True, exist_ok=True)
+        (out / "aoi" / "items").write_text(aoi, encoding="utf8")
+        aoi_n = json.loads(aoi)["features"]
+        print(f"  연구지역(AOI) {len(aoi_n)}개 {len(aoi)/1e6:.3f}MB — "
+              + ", ".join(f"{x['properties']['name']}({x['properties']['km2']}km²)" for x in aoi_n))
+
+        # ── 리(법정리)만 굽는다 ──────────────────────────────────────────────
+        #   '연구지역 선택' 도구는 뺐다(AOI 를 그대로 보여주면 되므로). 대신 **리 지명은
+        #   현장에서 항상 필요**하다는 요구가 있어 그 한 겹만 남긴다.
+        #   시도·시군구·읍면동·유역은 굽지 않는다 — 4.8MB → 0.6MB.
+        (out / "boundary" / "adm_ri").mkdir(parents=True, exist_ok=True)
+        gj = boundary_items(con, "adm_ri", (W, S, E, N))
+        (out / "boundary" / "adm_ri" / "items").write_text(gj, encoding="utf8")
+        bnd_b = len(gj.encode())
+        print(f"  리 {len(json.loads(gj)['features']):,}건 {bnd_b/1e6:.2f}MB (지역)")
 
     size = sum(f.stat().st_size for f in out.rglob("*") if f.is_file())
     files = sum(1 for f in out.rglob("*") if f.is_file())
     print(f"\n★ {out}")
     print(f"  도로 타일 {n_written:,}개 {total_b/1e6:.1f}MB (빈 타일 {n_empty:,}개 생략)")
-    print(f"  경계 {bnd_b/1e6:.1f}MB · 전체 {files:,}파일 {size/1e6:.1f}MB")
+    print(f"  전체 {files:,}파일 {size/1e6:.1f}MB")
     if size > 900e6:
         print("  ⚠ GitHub Pages 사이트 한도(1GB)에 근접한다 — 줌 범위나 지역을 줄일 것")
     print("\n  다음: 이 폴더를 git 저장소 루트(또는 docs/)에 두고 Pages 를 켠다.")
