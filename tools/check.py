@@ -75,6 +75,101 @@ def _strip_js_comments(src: str) -> str:
     return "".join(out)
 
 
+def undefined_top_level(scripts):
+    """**정의 없이 참조되는 이름**을 찾는다.
+
+    ★큰 블록을 갈아 끼우다 함수를 통째로 지우는 사고가 두 번 났다
+      (ADMB_LEVELS · memoOpen 외 4개). 문법은 멀쩡해서 파서로는 안 잡히고,
+      화면에서는 **최상위 ReferenceError 로 스크립트가 죽어** 지도의 모든 것이 사라진다.
+
+    ★호출(`f()`)만 세면 안 된다 — 이번 사고는 `onclick = memoSaveEdit` 처럼 **참조**였다.
+      (첫 판이 호출만 세다가 재현 시험에서 못 잡았다). 그래서 식별자 참조를 전부 본다:
+        · 제외 — 선언된 이름(함수·변수·매개변수·catch·for), 점 뒤 속성명, 객체 리터럴 키, 라벨
+    """
+    try:
+        import esprima
+    except ImportError:
+        return []
+    defined, used = set(), set()
+
+    def add_pattern(node):
+        """선언 패턴에서 이름을 거둔다(구조분해·기본값·나머지 포함)."""
+        if node is None or not hasattr(node, "type"):
+            return
+        t = node.type
+        if t == "Identifier":
+            defined.add(node.name)
+        elif t == "ObjectPattern":
+            for pr in node.properties:
+                add_pattern(getattr(pr, "value", None) or getattr(pr, "argument", None))
+        elif t == "ArrayPattern":
+            for el in node.elements:
+                add_pattern(el)
+        elif t in ("AssignmentPattern",):
+            add_pattern(node.left)
+        elif t in ("RestElement",):
+            add_pattern(node.argument)
+
+    def walk(node, parent=None, key=None):
+        if isinstance(node, list):
+            for x in node:
+                walk(x, parent, key)
+            return
+        if not hasattr(node, "type"):
+            return
+        t = node.type
+        if t in ("FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression",
+                 "ClassDeclaration", "ClassExpression"):
+            if getattr(node, "id", None):
+                defined.add(node.id.name)
+            for prm in (getattr(node, "params", None) or []):
+                add_pattern(prm)
+        if t == "VariableDeclarator":
+            add_pattern(node.id)
+        if t == "CatchClause" and getattr(node, "param", None):
+            add_pattern(node.param)
+        if t == "Identifier":
+            # 점 뒤 속성명(a.b) · 객체 키({a:1}) · 라벨 은 참조가 아니다
+            if parent is not None:
+                pt = parent.type
+                if pt == "MemberExpression" and key == "property" and not parent.computed:
+                    return
+                if pt == "Property" and key == "key" and not getattr(parent, "computed", False):
+                    return
+                if pt in ("LabeledStatement", "BreakStatement", "ContinueStatement"):
+                    return
+                if pt in ("FunctionDeclaration", "FunctionExpression", "ClassDeclaration",
+                          "ArrowFunctionExpression") and key in ("id", "params"):
+                    return
+                if pt == "VariableDeclarator" and key == "id":
+                    return
+            used.add(node.name)
+            return
+        for k in dir(node):
+            if k.startswith("_") or k in ("type", "toDict"):
+                continue
+            try:
+                v = getattr(node, k)
+            except Exception:                                     # noqa: BLE001
+                continue
+            if isinstance(v, list) or hasattr(v, "type"):
+                walk(v, node, k)
+
+    for src in scripts:
+        walk(esprima.parseScript(src.replace("?.", ".").replace("??", "||")).body)
+
+    GLOBALS = {
+        "window","document","navigator","localStorage","sessionStorage","console","location",
+        "self","globalThis","undefined","NaN","Infinity","maplibregl","fetch","setTimeout",
+        "clearTimeout","setInterval","clearInterval","requestAnimationFrame","alert","confirm",
+        "prompt","parseInt","parseFloat","isNaN","isFinite","encodeURIComponent","decodeURIComponent",
+        "Math","JSON","Date","Promise","Object","Array","String","Number","Boolean","Error",
+        "RegExp","Set","Map","WeakMap","Blob","File","URL","URLSearchParams","AbortController",
+        "TextDecoder","TextEncoder","arguments","Intl",
+    }
+    return sorted(used - defined - GLOBALS)
+
+
 def _get(base, path, raw=False):
     try:
         with urllib.request.urlopen(base + path, timeout=30) as r:
@@ -227,6 +322,11 @@ def main(argv=None):
                     ok = False
                     print("    ", e)
             _check(res, "인라인 JS 파싱", ok, f"{len(js)}개 · {sum(len(x) for x in js):,}자")
+            # ★정의 없이 부르는 이름이 있으면 최상위 ReferenceError 로 스크립트가 죽는다 —
+            #   그러면 지도의 모든 것(연구지역·도로·메모)이 한꺼번에 사라진다. 두 번 겪었다.
+            miss = undefined_top_level(js)
+            _check(res, "정의 없는 함수를 부르지 않는다", not miss,
+                   f"없는 이름: {miss}" if miss else "블록 교체로 함수가 지워지면 여기서 걸린다")
         except ImportError:
             _check(res, "인라인 JS 파싱", True, "esprima 없음 — 건너뜀")
 
@@ -398,6 +498,9 @@ def main(argv=None):
             ("주소창 높이 대응", "100dvh", "100vh 는 모바일에서 출렁인다"),
             ("노치 안전영역", "env(safe-area-inset", "viewport-fit=cover 와 짝"),
             ("엄지 현위치 버튼", 'id="gpsFab"', "작은 화면에서 추가로 뜬다"),
+            ("큰 버튼 조건에 화면폭도", "(max-width:900px)",
+             "pointer:coarse 만 보면 판정 안 되는 기기에서 안 뜬다"),
+            ("사각형은 드래그", "rectBind", "두 번 누르는 방식은 '그리는 모양'이 아니다"),
             ("회전 잠금", "disableRotation", "실수로 돌아가면 방향을 잃는다"),
             ("따라가기 해제 조건", 'map.on("dragstart"', "지도를 끌면 풀린다"),
         ):

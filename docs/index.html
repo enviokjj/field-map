@@ -47,7 +47,9 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
 #status{bottom:calc(12px + env(safe-area-inset-bottom))}
 /* ★손가락 기준 — 마우스가 아니라 터치인 기기에서만 키운다(데스크톱 배치는 그대로).
    44px 은 손끝 접촉면 기준 권장 최소값이다. */
-@media (pointer:coarse){
+/* ★`pointer:coarse` 하나만 보면 안 된다 — 그 판정이 안 되는 기기가 있어(스타일러스 지원 등)
+   폰인데도 큰 버튼이 안 떴다. **화면 폭 조건을 함께** 둔다. */
+@media (pointer:coarse), (max-width:900px){
   .panel button{min-height:44px;font-size:14px;padding:10px 14px}
   #ctl{gap:4px;flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;
        max-width:calc(100vw - 24px - env(safe-area-inset-left) - env(safe-area-inset-right))}
@@ -445,6 +447,9 @@ function memoLayers(){
     paint:{"text-color":"#3E2723","text-halo-color":"#FFFFFF","text-halo-width":2.0}});
   map.addLayer({id:"draft-line", type:"line", source:"draft",
     paint:{"line-color":"#00B0FF","line-width":2.4,"line-dasharray":[2,2]}});
+  map.addLayer({id:"draft-fill", type:"fill", source:"draft",
+    filter:["==",["geometry-type"],"Polygon"],
+    paint:{"fill-color":"#00B0FF","fill-opacity":0.18}});
   map.addLayer({id:"draft-dot", type:"circle", source:"draft",
     paint:{"circle-radius":5,"circle-color":"#00B0FF","circle-stroke-color":"#fff","circle-stroke-width":2}});
 }
@@ -468,12 +473,56 @@ function memoPick(mode){
   if(memoModeIdx < 0) memoModeIdx = 0;
   const m=memoMode();
   map.getCanvas().style.cursor = m ? "crosshair" : "";
+  // 사각형을 끌어 그리는 동안 지도가 같이 밀리면 안 된다
+  if(m==="polygon") map.dragPan.disable(); else map.dragPan.enable();
+  rectStart=null; rectPreview(null,null);
   status(m==="point"   ? "지점을 누르면 메모를 남깁니다"
        : m==="line"    ? "선 — 시작점과 끝점, 두 곳을 누르세요"
-       : m==="polygon" ? "사각형 — 대각 모서리 두 곳을 누르세요"
+       : m==="polygon" ? "사각형 — 지도를 끌어서 그리세요"
        : "메모 그리기를 껐습니다");
   memoRender();
 }
+/* ── 메모 입력 카드 ─────────────────────────────────────────────────────────
+   ★window.prompt 를 쓰지 않는다. 모바일 브라우저에 따라 막히거나(무반응) 화면을 가려서
+     "점은 찍히는데 메모를 못 남긴다" 가 된다. 화면 안에서 받는다. */
+let memoEditId = null;
+function memoOpen(id){
+  const f = memoRead().features.find(x=>x.properties.id===id);
+  if(!f) return;
+  memoEditId = id;
+  const ta=document.getElementById("memoText");
+  ta.value = f.properties.text || "";
+  document.getElementById("memoEdit").style.display="block";
+  setTimeout(()=>ta.focus(), 50);
+}
+function memoClose(){
+  memoEditId=null;
+  document.getElementById("memoEdit").style.display="none";
+}
+function memoSaveEdit(){
+  if(!memoEditId) return memoClose();
+  const fc=memoRead(), f=fc.features.find(x=>x.properties.id===memoEditId);
+  if(f) f.properties.text = document.getElementById("memoText").value.trim();
+  if(memoWrite(fc)){ memoRender(); memoClose(); status("메모를 저장했습니다"); }
+}
+function memoDelete(){
+  if(!memoEditId) return memoClose();
+  const fc=memoRead();
+  fc.features = fc.features.filter(x=>x.properties.id!==memoEditId);
+  if(memoWrite(fc)){ memoRender(); memoClose(); status("메모를 지웠습니다"); }
+}
+/* 도형을 저장소에 넣고 바로 편집 카드를 연다 — 도형은 **누르는 즉시** 지도에 남고,
+   글은 그다음에 적는다(안 적어도 도형은 남는다). */
+function memoAdd(geom){
+  const id=`m${Date.now()}${Math.floor(Math.random()*1000)}`;
+  const fc=memoRead();
+  fc.features.push({type:"Feature", geometry:geom,
+    properties:{ id, text:"", at:new Date().toISOString() }});
+  if(!memoWrite(fc)) return null;
+  memoRender(); memoOpen(id);
+  return id;
+}
+
 /* ★선·면은 **두 점**으로 끝난다.
      - 선: 시작점 → 끝점
      - 면: 대각 모서리 두 곳 → **사각형**
@@ -499,6 +548,53 @@ function memoFinishTwoPoint(){
   memoAdd(geom);                            // 도형을 먼저 남기고, 글은 카드에서 적는다
   status(m==="line" ? "선을 그렸습니다 — 메모를 적으세요" : "사각형을 그렸습니다 — 메모를 적으세요");
   return true;
+}
+/* ── 사각형은 **드래그**로 그린다 ───────────────────────────────────────────
+   ★두 번 눌러 만들게 했더니 "사각형을 그리는 모양이 아니다"는 지적을 받았다.
+     끌어서 크기를 보며 그리는 게 사람이 기대하는 동작이다.
+   ★끄는 동안 지도가 같이 밀리면 안 되므로 dragPan 을 잠근다(모드에서 나가면 되돌린다).
+   ★마우스와 터치를 같이 받는다 — 폰이 주 사용처다. */
+let rectStart=null;
+function rectPreview(a,b){
+  const src=map.getSource("draft"); if(!src) return;
+  src.setData({type:"FeatureCollection", features: (a&&b)
+    ? [{type:"Feature",properties:{},geometry:{type:"Polygon",coordinates:rectFrom(a,b)}}] : []});
+}
+function rectPt(ev){
+  const t=(ev.touches && ev.touches[0]) || (ev.changedTouches && ev.changedTouches[0]) || ev;
+  const r=map.getCanvas().getBoundingClientRect();
+  const ll=map.unproject([t.clientX-r.left, t.clientY-r.top]);
+  return [+ll.lng.toFixed(6), +ll.lat.toFixed(6)];
+}
+function rectDown(ev){
+  if(memoMode()!=="polygon") return;
+  ev.preventDefault();
+  rectStart=rectPt(ev); rectPreview(null,null);
+  status("끌어서 크기를 정하고 손을 떼세요");
+}
+function rectMove(ev){
+  if(memoMode()!=="polygon" || !rectStart) return;
+  ev.preventDefault();
+  rectPreview(rectStart, rectPt(ev));
+}
+function rectUp(ev){
+  if(memoMode()!=="polygon" || !rectStart) return;
+  const a=rectStart, b=rectPt(ev);
+  rectStart=null; rectPreview(null,null);
+  if(Math.abs(a[0]-b[0])<1e-6 && Math.abs(a[1]-b[1])<1e-6){
+    status("끌어서 사각형 크기를 정해 주세요", true); return;
+  }
+  memoAdd({type:"Polygon", coordinates:rectFrom(a,b)});
+  status("사각형을 그렸습니다 — 메모를 적으세요");
+}
+function rectBind(){
+  const c=map.getCanvasContainer();
+  c.addEventListener("mousedown", rectDown);
+  c.addEventListener("mousemove", rectMove);
+  window.addEventListener("mouseup", rectUp);
+  c.addEventListener("touchstart", rectDown, {passive:false});
+  c.addEventListener("touchmove",  rectMove, {passive:false});
+  c.addEventListener("touchend",   rectUp,   {passive:false});
 }
 async function memoExport(){
   const fc=memoRead();
@@ -561,10 +657,11 @@ map.on("click",(e)=>{
     status(`점을 찍었습니다 (${c[1].toFixed(5)}, ${c[0].toFixed(5)}) — 메모를 적으세요`);
     return;
   }
+  if(m==="polygon") return;                // 사각형은 드래그로 그린다(아래 핸들러)
   drawPts.push(c);
-  if(!memoFinishTwoPoint()){               // 두 점이 되면 바로 도형이 된다
+  if(!memoFinishTwoPoint()){               // 두 점이 되면 바로 선이 된다
     draftRender();
-    status(m==="line" ? "끝점을 누르세요" : "반대쪽 모서리를 누르세요");
+    status("끝점을 누르세요");
   }
 });
 
@@ -661,7 +758,7 @@ map.once("load", async ()=>{
   const aoiBounds = await aoiLoad();
   await riLoad(aoiBounds);
   roadStep = 1; roadApply();             // 도로는 켠 채로 시작(기본 70% — 30% 투명)
-  memoLayers(); memoRender();            // 저장해 둔 메모를 바로 띄운다
+  memoLayers(); memoRender(); rectBind(); // 저장해 둔 메모를 바로 띄운다
 });
 </script>
 </body>
