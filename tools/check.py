@@ -332,6 +332,32 @@ def main(argv=None):
         _check(res, "z12 선 굵기 ≥1.2px", bool(w) and float(w.group(1)) >= 1.2,
                f"{w.group(1)}px" if w else "못 읽음")
 
+        print("\n⑦b 굽는 범위 · 메모")
+        # ★구운 타일이 실제로 **연구지역 범위**에 있는지 본다 — 시군구 전체를 구우면
+        #   17배를 낭비하고, 엉뚱한 곳을 구우면 현장에서 도로가 안 나온다.
+        if static_dir and feats:
+            import math as _m
+            xs = [c[0] for f in feats for r in f["geometry"]["coordinates"] for c in r]
+            ys = [c[1] for f in feats for r in f["geometry"]["coordinates"] for c in r]
+            zdir = static_dir / "tiles" / "road_line" / "12"
+            txs = sorted(int(d.name) for d in zdir.iterdir()) if zdir.is_dir() else []
+            def lon2x(lon, z=12):
+                return int((lon + 180) / 360 * (1 << z))
+            want = (lon2x(min(xs)), lon2x(max(xs)))
+            ok = bool(txs) and txs[0] >= want[0] - 1 and txs[-1] <= want[1] + 1
+            _check(res, "타일이 연구지역 범위 안", ok,
+                   f"z12 x {txs[0] if txs else '-'}~{txs[-1] if txs else '-'} vs AOI {want[0]}~{want[1]}")
+            n_tiles = sum(1 for _ in (static_dir / "tiles").rglob("*.pbf"))
+            _check(res, "번들이 과하지 않다", n_tiles < 4000, f"타일 {n_tiles:,}개")
+
+        for name, tok, why in (
+            ("메모 기능", "MEMO_KEY", "지점을 눌러 글자를 남긴다"),
+            ("메모 저장소", "localStorage", "서버가 없어 이 기기에만 남는다"),
+            ("메모 내보내기", "memoExport", "GeoJSON 으로 빼내 다른 지도에서 연다"),
+            ("기존 메모 수정·삭제", "queryRenderedFeatures", "찍힌 점을 눌러 고친다"),
+        ):
+            _check(res, name, tok in html, why)
+
         print("\n⑧ 모바일·태블릿")
         for name, tok, why in (
             ("터치 타깃 확대", "@media (pointer:coarse)", "44px — 손끝 접촉면 기준 최소값"),

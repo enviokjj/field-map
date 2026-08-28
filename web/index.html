@@ -75,7 +75,9 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
   <button data-bm="topo" id="btnTopo" style="display:none">지형</button>
   <button id="btnAoi" class="sep" style="display:none" title="연구지역으로 이동">⛶ 연구지역</button>
   <button id="btnRoad" title="도로 중심선 — 확대해야 보입니다">도로</button>
-  <button id="btnGps" class="sep" title="현위치 — HTTPS 에서만 동작합니다">◎ 현위치</button>
+  <button id="btnMemo" class="sep" title="지점을 눌러 메모 — 이 기기에만 저장됩니다">✎ 메모</button>
+  <button id="btnMemoOut" style="display:none" title="메모를 GeoJSON 파일로 내보내기">⤓</button>
+  <button id="btnGps" title="현위치 — HTTPS 에서만 동작합니다">◎ 현위치</button>
 </div>
 <button id="gpsFab" title="현위치" aria-label="현위치">◎</button>
 <div id="status"></div>
@@ -195,11 +197,11 @@ function roadLayers(){
   return [
     {id:"road-case", type:"line", source:"road", "source-layer":"road_line", minzoom:ROAD_MINZ,
      paint:{"line-color":ROAD_CASING,"line-opacity":0.5,
-            "line-width":["interpolate",["linear"],["zoom"],12,4.2,17,9.5]}},
+            "line-width":["interpolate",["linear"],["zoom"],12,4.2,17,9.5,22,15.0]}},
     {id:"road-line", type:"line", source:"road", "source-layer":"road_line", minzoom:ROAD_MINZ,
      layout:{"line-cap":"round","line-join":"round"},
      paint:{"line-color":ROAD_COLOR,"line-opacity":1.0,
-            "line-width":["interpolate",["linear"],["zoom"],12,2.0,17,5.5]}},
+            "line-width":["interpolate",["linear"],["zoom"],12,2.0,17,5.5,22,9.0]}},
     {id:"road-name", type:"symbol", source:"road", "source-layer":"road_line", minzoom:14,
      filter:["all",["has","name"],["!=",["get","name"],""]],
      layout:{"symbol-placement":"line","text-field":["get","name"],
@@ -300,6 +302,85 @@ async function riLoad(bounds){
   console.log(`[리] ${feats.length}건`);
 }
 
+/* ══ 메모 — 지점을 눌러 남긴다 ══════════════════════════════════════════════
+   ★서버가 없다(정적 배포). 그래서 메모는 **이 기기 이 브라우저**에만 남는다(localStorage).
+     다른 기기와 나누려면 ⤓ 로 GeoJSON 을 내보내면 된다 — QGIS·다른 지도에서 바로 열린다.
+     기기를 바꾸거나 브라우저 저장소를 지우면 사라진다는 뜻이기도 하다. 그 사실을 숨기지 않는다.
+   ★사진·첨부는 안 된다(용량·서버 없음). 글자만 남긴다. */
+const MEMO_KEY = "fieldmap.memos.v1";
+let memoMode = false;
+function memoRead(){
+  try{ const v=JSON.parse(localStorage.getItem(MEMO_KEY)); 
+       if(v && v.type==="FeatureCollection" && Array.isArray(v.features)) return v; }
+  catch(e){ console.warn("[메모] 읽기 실패", e); }
+  return {type:"FeatureCollection", features:[]};
+}
+function memoWrite(fc){
+  try{ localStorage.setItem(MEMO_KEY, JSON.stringify(fc)); }
+  catch(e){ status("메모를 저장하지 못했습니다 — 브라우저 저장소가 막혀 있습니다", true); }
+}
+function memoRender(){
+  const fc=memoRead();
+  const src=map.getSource("memo"); if(src) src.setData(fc);
+  const b=document.getElementById("btnMemo");
+  if(b) b.textContent = memoMode ? "✎ 찍는 중" : (fc.features.length ? `✎ 메모 ${fc.features.length}` : "✎ 메모");
+  const x=document.getElementById("btnMemoOut");
+  if(x) x.style.display = fc.features.length ? "" : "none";
+}
+function memoLayers(){
+  if(map.getSource("memo")) return;
+  map.addSource("memo",{type:"geojson", data:memoRead()});
+  map.addLayer({id:"memo-dot", type:"circle", source:"memo",
+    paint:{"circle-radius":["interpolate",["linear"],["zoom"],11,5,17,9],
+           "circle-color":"#FFB300","circle-stroke-color":"#3E2723","circle-stroke-width":2}});
+  map.addLayer({id:"memo-label", type:"symbol", source:"memo", minzoom:13,
+    layout:{"text-field":["get","text"],"text-font":["Noto Sans Regular"],
+            "text-size":12,"text-anchor":"top","text-offset":[0,0.9],"text-max-width":11},
+    paint:{"text-color":"#3E2723","text-halo-color":"#FFFFFF","text-halo-width":2.0}});
+}
+function memoToggle(){
+  memoMode=!memoMode;
+  document.getElementById("btnMemo").classList.toggle("on", memoMode);
+  map.getCanvas().style.cursor = memoMode ? "crosshair" : "";
+  status(memoMode ? "메모할 지점을 지도에서 누르세요 (기존 메모를 누르면 수정·삭제)"
+                  : "메모 찍기를 껐습니다");
+  memoRender();
+}
+function memoExport(){
+  const fc=memoRead();
+  if(!fc.features.length){ status("내보낼 메모가 없습니다", true); return; }
+  const blob=new Blob([JSON.stringify(fc,null,2)],{type:"application/geo+json"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download=`memos_${new Date().toISOString().slice(0,10)}.geojson`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+  status(`메모 ${fc.features.length}건을 내보냈습니다`);
+}
+map.on("click",(e)=>{
+  const hit = map.getLayer("memo-dot")
+    ? map.queryRenderedFeatures(e.point,{layers:["memo-dot"]}) : [];
+  const fc = memoRead();
+  if(hit.length){                                   // 기존 메모 — 수정하거나 비우면 삭제
+    const id = hit[0].properties.id;
+    const cur = fc.features.find(f=>f.properties.id===id);
+    const t = window.prompt("메모 수정 (비우고 확인하면 삭제)", cur ? cur.properties.text : "");
+    if(t===null) return;
+    if(t.trim()===""){ fc.features = fc.features.filter(f=>f.properties.id!==id); status("메모를 지웠습니다"); }
+    else if(cur){ cur.properties.text = t.trim(); status("메모를 고쳤습니다"); }
+    memoWrite(fc); memoRender(); return;
+  }
+  if(!memoMode) return;                             // 찍는 중일 때만 새로 만든다
+  const t = window.prompt("이 지점에 남길 메모");
+  if(t===null || t.trim()==="") return;
+  fc.features.push({type:"Feature",
+    properties:{ id:`m${Date.now()}${Math.floor(Math.random()*1000)}`,
+                 text:t.trim(), at:new Date().toISOString() },
+    geometry:{type:"Point", coordinates:[+e.lngLat.lng.toFixed(6), +e.lngLat.lat.toFixed(6)]}});
+  memoWrite(fc); memoRender();
+  status(`메모를 남겼습니다 (${e.lngLat.lat.toFixed(5)}, ${e.lngLat.lng.toFixed(5)})`);
+});
+
 /* ══ GPS 현위치 ══════════════════════════════════════════════════════════════
    ★HTTPS(보안 컨텍스트)에서만 동작한다. http:// 로 열면 브라우저가 위치를 아예 안 준다
      (localhost 만 예외). 그 경우를 먼저 알려 준다 — 안 그러면 "눌러도 아무 일도 없다"가 된다. */
@@ -354,6 +435,8 @@ function gpsStart(){
     status("현위치 실패 — " + why, true);
   }, {enableHighAccuracy:true, maximumAge:5000, timeout:15000});
 }
+document.getElementById("btnMemo").onclick=memoToggle;
+document.getElementById("btnMemoOut").onclick=memoExport;
 gpsBtns().forEach(b=>b.onclick=gpsStart);
 map.on("dragstart",()=>{ if(gpsFollow){ gpsFollow=false; status("따라가기 해제 — 현위치 버튼을 다시 누르면 재개"); } });
 
@@ -386,6 +469,7 @@ map.once("load", async ()=>{
   const aoiBounds = await aoiLoad();
   await riLoad(aoiBounds);
   roadToggle();                          // 도로는 켠 채로 시작한다(이 페이지의 목적이다)
+  memoLayers(); memoRender();            // 저장해 둔 메모를 바로 띄운다
 });
 </script>
 </body>

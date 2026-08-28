@@ -110,7 +110,10 @@ def main(argv=None):
     ap.add_argument("--region", default="adm_sigungu:5181000000", help="layer:code (기본 인제군)")
     ap.add_argument("--zoom", nargs=2, type=int, default=[12, 16], metavar=("MIN", "MAX"))
     ap.add_argument("--out", default="docs")   # GitHub Pages 의 main/docs 를 그대로 쓴다
-    ap.add_argument("--pad", type=float, default=0.05, help="지역 bbox 를 이만큼(도) 넓혀 굽는다")
+    ap.add_argument("--extent", choices=["aoi", "region"], default="aoi",
+                    help="굽는 범위 — aoi=연구지역만(기본) · region=시군구 전체")
+    ap.add_argument("--pad", type=float, default=0.01,
+                    help="범위를 이만큼(도) 넓혀 굽는다 — 가장자리가 휑하지 않게")
     ap.add_argument("--aoi", default="인제 훈련",
                     help="담을 연구지역 이름(쉼표 구분). 빈 값이면 범위 안 전부")
     ap.add_argument("--page-only", action="store_true",
@@ -155,9 +158,30 @@ def main(argv=None):
     out.mkdir(parents=True)
 
     with eng.connect() as con:
-        name, bb = region_bbox(con, layer, code)
+        # ★굽는 범위 = **연구지역(AOI) 자체**. 종전엔 시군구 전체를 구웠는데
+        #   (인제군 0.65°×0.67°) 실제로 필요한 건 AOI(0.19°×0.13°)뿐이라 17배를 낭비했다.
+        #   `--extent region` 을 주면 종전처럼 시군구 전체를 굽는다.
+        names = [x.strip() for x in a.aoi.split(",") if x.strip()]
+        if a.extent == "aoi" and names:
+            row = con.execute(text("""
+                -- ★먼저 4326 으로 옮긴 뒤 범위를 잡는다. ST_Extent 는 box2d 라
+                --   그대로 geometry 로 캐스팅하면 SRID 를 잃고 ST_Transform 이 터진다.
+                SELECT ST_XMin(g) x1, ST_YMin(g) y1, ST_XMax(g) x2, ST_YMax(g) y2
+                FROM (SELECT ST_Extent(ST_Transform(fp, 4326)) g FROM (
+                        SELECT DISTINCT ON (a.properties->>'name') a.footprint fp
+                        FROM catalog.asset a
+                        WHERE a.kind='aoi_cube' AND a.properties->>'name' = ANY(:names)
+                        ORDER BY a.properties->>'name', a.acquired_at DESC) t) u"""),
+                {"names": names}).mappings().first()
+            if not row or row["x1"] is None:
+                raise SystemExit(f"연구지역을 못 찾았다: {names}")
+            name = ", ".join(names)
+            bb = (row["x1"], row["y1"], row["x2"], row["y2"])
+        else:
+            name, bb = region_bbox(con, layer, code)
         W, S, E, N = bb[0] - a.pad, bb[1] - a.pad, bb[2] + a.pad, bb[3] + a.pad
-        print(f"연구지역 {name} ({layer}:{code})  bbox {W:.4f},{S:.4f},{E:.4f},{N:.4f}")
+        print(f"굽는 범위 [{a.extent}] {name}  bbox {W:.4f},{S:.4f},{E:.4f},{N:.4f}"
+              f"  ({(E-W):.3f}° × {(N-S):.3f}°)")
 
         # ── 페이지·폰트 ──────────────────────────────────────────────────────
         shutil.copytree(ROOT / "web", out, dirs_exist_ok=True)
@@ -204,7 +228,6 @@ def main(argv=None):
                        a.properties->>'name' AS nm, a.footprint AS fp, a.acquired_at AS at
                 FROM catalog.asset a
                 WHERE a.kind='aoi_cube' AND a.properties->>'name' IS NOT NULL
-                  AND a.footprint && ST_Transform(ST_MakeEnvelope(:x1,:y1,:x2,:y2,4326), 5186)
                   AND (:names IS NULL OR a.properties->>'name' = ANY(:names))
                 ORDER BY a.properties->>'name', a.acquired_at DESC
               ) t
