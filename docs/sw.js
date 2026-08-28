@@ -16,7 +16,7 @@
  * ★배경지도 z8~16 은 번들에 들어 있지만(docs/basemap), **본 적 없는 타일은 캐시에 없다**.
  *   화면의 '오프라인 준비' 가 manifest.json 을 읽어 5,892장을 한 번에 저장한다.
  */
-const VERSION = "4e9b7f1b02";          // ★build_static.py 가 굽을 때마다 새로 박는다
+const VERSION = "87314d04dd";          // ★build_static.py 가 굽을 때마다 새로 박는다
 const CACHE = "fieldmap-" + VERSION;
 const BASE = new URL("./", self.location).pathname;      // 예: /field-map/
 

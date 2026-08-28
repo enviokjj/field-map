@@ -588,13 +588,15 @@ def main(argv=None):
                                ("현위치 버튼도 비례", "--fab:  clamp(", "54 ~ 68px"),
                                ("iOS 자동확대 차단", "text-size-adjust:100%", "돌릴 때 글자가 들쭉날쭉해진다")):
             _check(res, name, tok in html, why)
-        # ★버튼이 폰 폭을 넘어 **오른쪽으로 밀려 안 보이던** 것 — 줄을 바꿔 전부 보이게 한다.
-        # ★검사가 **제 주석에 스스로 걸렸다**(세 번째다 — glyphs·%7B 에 이어).
-        #   "종전엔 nowrap 이었다"고 적어 둔 CSS 주석이 검사어와 같았다. 주석을 걷고 본다.
+        # ★상단 바는 좁은 화면에서 **한 줄로 옆으로 민다**(요청). 줄바꿈은 지도를 덮는다.
+        # ★검사가 **제 주석에 스스로 걸렸다**(세 번째 — glyphs·%7B 에 이어). CSS 주석을 걷고 본다.
         css = _re2.sub(r"/\*.*?\*/", " ", html, flags=_re2.S).replace(" ", "")
-        _check(res, "좁은 화면에서 버튼이 줄바꿈",
-               "flex-wrap:wrap" in css and "flex-wrap:nowrap" not in css,
-               "가로 스크롤이면 버튼이 있는지조차 모른다")
+        _check(res, "상단 바는 옆으로 민다",
+               "flex-wrap:nowrap;overflow-x:auto" in css,
+               "줄바꿈하면 바가 두 줄이 되어 지도를 덮는다")
+        _check(res, "더 남았다는 표시가 있다",
+               "#ctl.more{" in css and "ctlOverflow" in code,
+               "표시가 없으면 오른쪽 버튼이 있는지조차 모른다 — 끝까지 밀면 사라진다")
     finally:
         if proc:
             proc.terminate()
