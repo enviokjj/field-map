@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>현장 지도 — 연구지역 · 도로(중심선)</title>
+<!--
+  현장 지도 — 지형분석 통합 서버의 구축 화면에서 **네 가지만** 떼어낸 독립 페이지.
+    ① 연구지역 선택 (행정구역 4단계 · 수자원 단위지도 3종 — 면 클릭)
+    ② 배경지도 선택 (일반 · 브이월드 · 위성)
+    ③ 도로(중심선) — 벡터 타일(MVT)
+    ④ GPS 현위치
+
+  ★독립이다 — 원 저장소의 common.js·build.js 를 읽지 않는다. 이 파일 하나에 CSS·JS 가 다 있다.
+  ★도로를 GeoJSON 으로 받지 않는다 — road_line 은 1,815만 건 7GB 라 화면 한 장이 z13 에서
+    48.96MB(그나마 잘린 값)였다. MVT 로는 같은 화면이 85KB 다.
+  ★GPS 는 **HTTPS 에서만 동작한다**(보안 컨텍스트). http:// 로 열면 브라우저가 위치를 아예
+    안 준다 — localhost 만 예외. gpsStart() 가 그 경우를 먼저 알려 준다.
+
+  설정은 아래 FIELD_CFG 한 곳에서만 바꾼다.
+-->
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+<style>
+:root{--ink:#151D2C;--muted:#697A92;--line:#DEE4EC;--surface:#fff;--raise:#EEF2F6;
+  --blue:#0B6FA4;--shadow:0 8px 28px rgba(21,29,44,.12),0 0 0 1px rgba(21,29,44,.07)}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans KR",sans-serif;color:var(--ink)}
+#map{position:absolute;inset:0}
+.panel{position:absolute;background:rgba(255,255,255,.97);border-radius:10px;box-shadow:var(--shadow);z-index:5}
+#ctl{top:12px;left:12px;padding:5px;display:flex;gap:2px;align-items:center;flex-wrap:wrap;max-width:calc(100vw - 24px)}
+#regionBar{bottom:12px;left:12px;padding:5px;display:flex;gap:2px;align-items:center;flex-wrap:wrap;max-width:calc(100vw - 24px)}
+.panel button{border:none;background:none;color:var(--muted);font-size:12px;font-weight:500;padding:7px 11px;border-radius:6px;cursor:pointer;white-space:nowrap}
+.panel button:hover{background:var(--raise);color:var(--ink)}
+#ctl button.on{background:var(--ink);color:#fff;font-weight:600}
+#regionBar button.on{background:var(--blue);color:#fff;font-weight:600}
+.panel button.sep{margin-left:4px;border:1px solid var(--line)}
+#sel{top:12px;right:12px;width:224px;padding:12px 13px;display:none}
+#sel h4{margin:0 0 7px;font-size:12px;color:var(--muted);font-weight:600}
+#selName{font-size:15px;font-weight:700;line-height:1.35}
+#selMeta{margin-top:3px;font-size:11.5px;color:var(--muted)}
+#sel .row{display:flex;gap:6px;margin-top:10px}
+#sel .row button{flex:1;padding:7px;border-radius:6px;border:1px solid var(--line);background:var(--surface);font-size:11.5px;font-weight:600}
+#status{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);z-index:6;background:rgba(21,29,44,.9);
+  color:#fff;font-size:12px;padding:8px 14px;border-radius:8px;max-width:min(560px,calc(100vw - 24px));display:none;line-height:1.45}
+#status.warn{background:#8a1c2b}
+#coord{position:absolute;bottom:12px;right:12px;z-index:5;background:rgba(255,255,255,.92);border-radius:6px;
+  padding:5px 9px;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.maplibregl-ctrl-attrib{font-size:10px}
+@media (max-width:700px){#sel{top:auto;bottom:64px;right:12px;width:190px}#coord{display:none}}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="panel" id="ctl">
+  <button data-bm="osm">일반</button>
+  <button data-bm="vworld">브이월드</button>
+  <button data-bm="satellite">위성</button>
+  <button data-bm="topo" id="btnTopo" style="display:none">지형</button>
+  <button id="btnRoad" class="sep" title="도로 중심선 — 확대해야 보입니다">도로</button>
+  <button id="btnGps" class="sep" title="현위치 — HTTPS 에서만 동작합니다">◎ 현위치</button>
+</div>
+<div class="panel" id="regionBar">
+  <button data-rg="adm_sido">시도</button>
+  <button data-rg="adm_sigungu">시군구</button>
+  <button data-rg="adm_emd">읍면동</button>
+  <button data-rg="adm_ri">리</button>
+  <button data-rg="basin_l" class="sep">대권역</button>
+  <button data-rg="basin_m">중권역</button>
+  <button data-rg="basin_s">표준유역</button>
+  <button data-rg="" class="sep">끄기</button>
+</div>
+<div class="panel" id="sel">
+  <h4>선택한 연구지역</h4>
+  <div id="selName">—</div><div id="selMeta"></div>
+  <div class="row"><button id="selZoom">영역으로 이동</button><button id="selClear">해제</button></div>
+</div>
+<div id="status"></div>
+<div id="coord">—</div>
+
+<script>
+/* ══ 설정 — 여기 한 곳만 고친다 ═══════════════════════════════════════════════
+   apiBase        이 앱 서버 주소. ""(빈 문자열)=페이지와 같은 출처.
+                  다른 시스템의 페이지에서 부를 때만 "https://…" 절대주소를 넣는다.
+   hillshadeBase  '지형' 배경(5m DEM 음영기복)을 가진 원 게이트웨이 주소.
+                  비워 두면 지형 버튼이 아예 안 뜬다(이 앱은 DEM 을 갖고 있지 않다).
+   vworldKey      브이월드 인증키. ★키는 **접속 도메인에 묶인다** — 새 도메인에서 쓰려면
+                  vworld.kr 에 그 도메인을 등록해야 타일이 온다.
+   region         첫 화면에서 잡아 둘 연구지역.                                    */
+const FIELD_CFG = {
+  apiBase: "",
+  hillshadeBase: "",
+  vworldKey: "ABCD508D-277F-48D9-9589-C58D40472827",
+  region: { layer:"adm_sigungu", code:"5181000000", name:"인제군",
+            bbox:[127.9756, 37.8086, 128.5211, 38.3813] },
+};
+const API = FIELD_CFG.apiBase.replace(/\/$/, "");
+/* ★상대경로로 만든다. GitHub Pages 의 **프로젝트 저장소**는 사이트 주소가
+   `https://<계정>.github.io/<저장소>/` 라, `/tiles/…` 같은 절대경로는 도메인 루트로 가서
+   404 가 난다. `./tiles/…` 는 페이지 위치 기준이라 루트 배포·하위경로 배포 양쪽에서 맞는다.
+   apiBase 를 절대주소로 준 경우(다른 서버를 부를 때)는 그대로 붙인다. */
+const api = (p) => API ? API + p : "." + p;
+const fetchJson = async (p) => {
+  const r = await fetch(api(p));
+  if(!r.ok) throw new Error(`${p} → ${r.status}`);
+  return r.json();
+};
+function status(msg, warn){
+  const el=document.getElementById("status");
+  if(!msg){ el.style.display="none"; return; }
+  el.textContent=msg; el.classList.toggle("warn", !!warn); el.style.display="block";
+  clearTimeout(el._t); el._t=setTimeout(()=>{ el.style.display="none"; }, warn?9000:4500);
+}
+
+/* ══ 배경지도 ════════════════════════════════════════════════════════════════
+   ★위성 타일에는 글자가 하나도 없다 → 라벨 전용 타일(Hybrid)을 한 겹 얹는다.
+     Hybrid 에는 도로 선이 같이 구워져 있어 뗄 수 없다(래스터 한 장이라 분리 불가).
+   ★배경을 바꿀 때 라벨 층도 **같이** 지운다 — 안 지우면 다음 배경 위에 옛 라벨이 남는다. */
+const vw = (layer, ext) =>
+  `https://api.vworld.kr/req/wmts/1.0.0/${FIELD_CFG.vworldKey}/${layer}/{z}/{y}/{x}.${ext||"png"}`;
+const BASEMAPS = {
+  osm:       { tiles:["https://tile.openstreetmap.org/{z}/{x}/{y}.png"], attribution:"© OpenStreetMap" },
+  vworld:    { tiles:[vw("Base")], attribution:"© VWorld · 국토교통부" },
+  satellite: { tiles:[vw("Satellite","jpeg")], labelTiles:[vw("Hybrid")], attribution:"© VWorld · 국토교통부" },
+};
+if(FIELD_CFG.hillshadeBase){
+  BASEMAPS.topo = { tiles:[FIELD_CFG.hillshadeBase.replace(/\/$/,"")+"/basemap/hillshade/{z}/{x}/{y}.png"],
+                    attribution:"전국 5m DEM 음영기복 · NGII" };
+  document.getElementById("btnTopo").style.display="";
+}
+let curBm = "vworld";
+
+const map = new maplibregl.Map({
+  container:"map",
+  center:[(FIELD_CFG.region.bbox[0]+FIELD_CFG.region.bbox[2])/2,
+          (FIELD_CFG.region.bbox[1]+FIELD_CFG.region.bbox[3])/2],
+  zoom:11, maxPitch:0, attributionControl:{compact:true},
+  style:{ version:8,
+    // ★glyphs 는 반드시 **style 안**에. Map 옵션에 두면 maplibre 가 조용히 무시하고
+    //   `glyphsUrl is not set` 이 난다 — 그러면 숫자가 섞인 라벨 하나 때문에 그 타일의
+    //   심볼 전체가 실패해 한글 지명까지 통째로 사라진다(원 저장소에서 실제로 겪었다).
+    glyphs: api("/fonts/{fontstack}/{range}.pbf"),
+    sources:{ basemap:{type:"raster", tiles:BASEMAPS[curBm].tiles, tileSize:256, maxzoom:18,
+                       attribution:BASEMAPS[curBm].attribution} },
+    layers:[{id:"basemap", type:"raster", source:"basemap"}] }
+});
+map.addControl(new maplibregl.NavigationControl({showCompass:false}), "bottom-right");
+map.addControl(new maplibregl.ScaleControl({maxWidth:110, unit:"metric"}), "bottom-right");
+
+function setBasemap(key){
+  const b=BASEMAPS[key]; if(!b) return;
+  curBm=key;
+  ["basemap-lbl","basemap"].forEach(id=>{
+    if(map.getLayer(id)) map.removeLayer(id);
+    if(map.getSource(id)) map.removeSource(id);
+  });
+  const first=(map.getStyle().layers[0]||{}).id;      // 항상 맨 아래(도로·경계 밑)
+  map.addSource("basemap",{type:"raster", tiles:b.tiles, tileSize:256, maxzoom:18, attribution:b.attribution});
+  map.addLayer({id:"basemap", type:"raster", source:"basemap"}, first);
+  if(b.labelTiles){
+    map.addSource("basemap-lbl",{type:"raster", tiles:b.labelTiles, tileSize:256, maxzoom:18});
+    map.addLayer({id:"basemap-lbl", type:"raster", source:"basemap-lbl"}, first);
+  }
+  document.querySelectorAll("#ctl [data-bm]").forEach(x=>x.classList.toggle("on", x.dataset.bm===key));
+}
+document.querySelectorAll("#ctl [data-bm]").forEach(b=>b.onclick=()=>setBasemap(b.dataset.bm));
+
+/* ══ 도로(중심선) — 벡터 타일 ════════════════════════════════════════════════ */
+let ROAD_MINZ = 12;                 // /tiles/layers 에서 덮어쓴다(사본을 여기 고정하지 않는다)
+let roadOn = false;
+function roadLayers(){
+  return [
+    {id:"road-case", type:"line", source:"road", "source-layer":"road_line", minzoom:ROAD_MINZ,
+     paint:{"line-color":"#FFFFFF","line-opacity":0.55,
+            "line-width":["interpolate",["linear"],["zoom"],12,1.6,17,5.0]}},
+    {id:"road-line", type:"line", source:"road", "source-layer":"road_line", minzoom:ROAD_MINZ,
+     layout:{"line-cap":"round","line-join":"round"},
+     paint:{"line-color":"#C2412B","line-opacity":0.9,
+            "line-width":["interpolate",["linear"],["zoom"],12,0.6,17,2.4]}},
+    {id:"road-name", type:"symbol", source:"road", "source-layer":"road_line", minzoom:14,
+     filter:["all",["has","name"],["!=",["get","name"],""]],
+     layout:{"symbol-placement":"line","text-field":["get","name"],
+             "text-font":["Noto Sans Regular"],"text-size":11,"symbol-spacing":180},
+     paint:{"text-color":"#7A2418","text-halo-color":"#FFFFFF","text-halo-width":1.6}},
+  ];
+}
+function roadToggle(){
+  const btn=document.getElementById("btnRoad");
+  if(roadOn){
+    roadLayers().forEach(L=>{ if(map.getLayer(L.id)) map.removeLayer(L.id); });
+    if(map.getSource("road")) map.removeSource("road");
+    roadOn=false; btn.classList.remove("on"); status("도로를 껐습니다"); return;
+  }
+  if(!map.getSource("road"))
+    // maxzoom:16 = 그 위 줌은 16 타일을 확대해 쓴다(서버 부하를 늘리지 않는다)
+    map.addSource("road",{type:"vector", tiles:[api("/tiles/road_line/{z}/{x}/{y}.pbf")],
+                          minzoom:ROAD_MINZ, maxzoom:16});
+  roadLayers().forEach(L=>{ if(!map.getLayer(L.id)) map.addLayer(L); });
+  roadOn=true; btn.classList.add("on");
+  status(map.getZoom() < ROAD_MINZ
+    ? `도로 표시 — 🔍 z${ROAD_MINZ} 이상으로 확대해야 보입니다 (지금 z${map.getZoom().toFixed(1)})`
+    : "도로(중심선) 표시");
+}
+document.getElementById("btnRoad").onclick=roadToggle;
+
+/* ══ 연구지역 — 경계 면 클릭 ════════════════════════════════════════════════
+   ★읍면동·리는 전국을 한 번에 못 받는다(서버가 413 으로 막는다). 어느 레이어가 그런지는
+     /boundary/layers 의 needs_bbox 가 알려 준다 — 임계값 사본을 화면에 두지 않는다.
+   ★fill 은 아주 옅게만(클릭 판정용). 진하게 덮으면 배경이 안 보인다.
+   ★라벨은 서버가 준 대표점(lon/lat)에 찍는다 — 폴리곤에 symbol 을 얹으면 MultiPolygon
+     파트마다 앵커가 생겨 섬마다 같은 지명이 반복된다. */
+let BND_META = {}, rgLayer = null, rgSel = null, _rgMove = null;
+
+async function rgInit(){
+  try{
+    const cat = await fetchJson("/boundary/layers");
+    (cat.groups||[]).forEach(g=>(g.layers||[]).forEach(l=>{ BND_META[l.layer]=l; }));
+    document.querySelectorAll("#regionBar [data-rg]").forEach(b=>{
+      const m=BND_META[b.dataset.rg];
+      if(m){ b.textContent=m.label;
+        b.title=`${m.label} ${m.count.toLocaleString()}개` + (m.needs_bbox?" — 화면 범위만":""); }
+    });
+  }catch(e){ status("경계 목록을 못 받았습니다: "+e, true); }
+}
+function rgEnsure(){
+  if(map.getSource("bnd")) return;
+  map.addSource("bnd",{type:"geojson", data:{type:"FeatureCollection",features:[]}});
+  map.addSource("bnd-lbl",{type:"geojson", data:{type:"FeatureCollection",features:[]}});
+  map.addLayer({id:"bnd-fill", type:"fill", source:"bnd", paint:{"fill-color":"#0B6FA4","fill-opacity":0.05}});
+  map.addLayer({id:"bnd-line", type:"line", source:"bnd",
+    paint:{"line-color":"#0B6FA4","line-width":1.1,"line-opacity":0.8}});
+  map.addLayer({id:"bnd-selfill", type:"fill", source:"bnd", filter:["==",["get","code"],""],
+    paint:{"fill-color":"#F79009","fill-opacity":0.18}});
+  map.addLayer({id:"bnd-sel", type:"line", source:"bnd", filter:["==",["get","code"],""],
+    paint:{"line-color":"#B54708","line-width":2.6}});
+  map.addLayer({id:"bnd-label", type:"symbol", source:"bnd-lbl",
+    layout:{"text-field":["get","name"],"text-font":["Noto Sans Regular"],"text-size":12,"text-padding":3,
+            "symbol-sort-key":["-",0,["coalesce",["get","area_km2"],0]]},
+    paint:{"text-color":"#14304A","text-halo-color":"#FFFFFF","text-halo-width":1.8}});
+  map.on("click","bnd-fill",(e)=>{
+    const f=e.features&&e.features[0]; if(!f) return;
+    e.originalEvent.stopPropagation();
+    const p=f.properties, code=String(p.code);
+    // 같은 면을 다시 누르면 해제 — 단 더블클릭(확대)은 살린다(300ms 안은 무시)
+    if(rgSel && rgSel.code===code && Date.now()-(rgSel.t||0) > 300){ rgClear(); return; }
+    rgSel={layer:rgLayer, code, name:p.name, parent:p.parent_name||"",
+           area:Number(p.area_km2)||0, t:Date.now()};
+    rgRender();
+  });
+  map.on("mouseenter","bnd-fill",()=>{ map.getCanvas().style.cursor="pointer"; });
+  map.on("mouseleave","bnd-fill",()=>{ map.getCanvas().style.cursor=""; });
+}
+async function rgLoad(){
+  if(!rgLayer) return;
+  const meta=BND_META[rgLayer]||{};
+  let q="";
+  if(meta.needs_bbox){
+    const b=map.getBounds(), w=b.getWest(), s=b.getSouth(), e=b.getEast(), n=b.getNorth();
+    const dx=(e-w)*0.4, dy=(n-s)*0.4;      // 조금 움직일 때마다 다시 받지 않게 넓혀서
+    q=`?bbox=${[w-dx,s-dy,e+dx,n+dy].map(v=>v.toFixed(5)).join(",")}`;
+  }
+  try{
+    const gj=await fetchJson(`/boundary/${rgLayer}/items${q}`);
+    const feats=gj.features||[];
+    const s1=map.getSource("bnd"); if(s1) s1.setData(gj);
+    const s2=map.getSource("bnd-lbl");
+    if(s2) s2.setData({type:"FeatureCollection", features:feats
+      .filter(f=>typeof f.properties.lon==="number" && typeof f.properties.lat==="number")
+      .map(f=>({type:"Feature", properties:f.properties,
+                geometry:{type:"Point", coordinates:[f.properties.lon,f.properties.lat]}}))});
+    if(rgSel && rgSel.layer===rgLayer && !rgSel.area){   // 기본 선택의 이름·면적을 채운다
+      const hit=feats.find(f=>String(f.properties.code)===rgSel.code);
+      if(hit){ rgSel.parent=hit.properties.parent_name||"";
+               rgSel.area=Number(hit.properties.area_km2)||0; rgRender(); }
+    }
+  }catch(e){ status(`${meta.label||rgLayer} 불러오기 실패: ${e}`, true); }
+}
+function rgShow(layer){
+  rgEnsure();
+  if(_rgMove){ map.off("moveend",_rgMove); _rgMove=null; }
+  rgLayer = layer || null;
+  document.querySelectorAll("#regionBar [data-rg]").forEach(b=>b.classList.toggle("on", b.dataset.rg===(layer||"")));
+  if(!rgLayer){
+    ["bnd","bnd-lbl"].forEach(s=>{ const x=map.getSource(s); if(x) x.setData({type:"FeatureCollection",features:[]}); });
+    rgClear(true); status("경계 표시를 껐습니다"); return;
+  }
+  if(rgSel && rgSel.layer!==rgLayer) rgClear(true);     // 레이어가 바뀌면 선택은 의미가 없다
+  rgLoad();
+  if((BND_META[rgLayer]||{}).needs_bbox){              // 화면 범위 레이어는 이동할 때마다 다시
+    let t=null;
+    _rgMove=()=>{ clearTimeout(t); t=setTimeout(rgLoad, 250); };
+    map.on("moveend",_rgMove);
+  }
+  const m=BND_META[rgLayer]||{};
+  status(`${m.label||rgLayer} 표시 — 면을 클릭하면 연구지역이 됩니다`
+    + (m.needs_bbox ? " (화면에 보이는 범위만 불러옵니다)" : ""));
+}
+function rgRender(){
+  const card=document.getElementById("sel");
+  if(!rgSel){ card.style.display="none"; }
+  else{
+    card.style.display="block";
+    document.getElementById("selName").textContent=rgSel.name;
+    document.getElementById("selMeta").textContent =
+      (rgSel.parent? rgSel.parent+" · " : "") + (rgSel.area? rgSel.area.toLocaleString()+" km²" : "");
+  }
+  const code = rgSel ? rgSel.code : "";
+  ["bnd-sel","bnd-selfill"].forEach(id=>{ if(map.getLayer(id)) map.setFilter(id,["==",["get","code"],code]); });
+}
+function rgClear(quiet){ rgSel=null; rgRender(); if(!quiet) status("연구지역 선택을 해제했습니다"); }
+/* 선택한 면의 범위로 이동 — **이미 받아 둔 도형**에서 계산한다.
+   ★서버에 또 묻지 않는다: 그래야 정적 배포(GitHub Pages)에서도 그대로 돈다.
+     표시용 간이화 도형이라 실제보다 아주 조금 작을 수 있지만, '이동'에는 충분하다. */
+function rgZoom(){
+  if(!rgSel) return;
+  const src=map.getSource("bnd");
+  const feats=(src && src._data && src._data.features) || [];
+  const f=feats.find(x=>String(x.properties.code)===rgSel.code);
+  if(!f){ status("먼저 그 면이 화면에 보여야 이동할 수 있습니다", true); return; }
+  let w=180,s2=90,e=-180,n=-90;
+  (function walk(c){
+    if(typeof c[0]==="number"){ w=Math.min(w,c[0]); e=Math.max(e,c[0]); s2=Math.min(s2,c[1]); n=Math.max(n,c[1]); return; }
+    c.forEach(walk);
+  })(f.geometry.coordinates);
+  map.fitBounds([[w,s2],[e,n]],{padding:60});
+}
+document.querySelectorAll("#regionBar [data-rg]").forEach(b=>b.onclick=()=>rgShow(b.dataset.rg));
+document.getElementById("selZoom").onclick=rgZoom;
+document.getElementById("selClear").onclick=()=>rgClear();
+
+/* ══ GPS 현위치 ══════════════════════════════════════════════════════════════
+   ★HTTPS(보안 컨텍스트)에서만 동작한다. http:// 로 열면 브라우저가 위치를 아예 안 준다
+     (localhost 만 예외). 그 경우를 먼저 알려 준다 — 안 그러면 "눌러도 아무 일도 없다"가 된다. */
+let gpsWatch=null, gpsFollow=false;
+function gpsLayers(){
+  if(map.getSource("gps")) return;
+  map.addSource("gps",{type:"geojson", data:{type:"FeatureCollection",features:[]}});
+  // 정확도 원 — 반경(m)을 화면 픽셀로 환산(위도 보정 포함). 줌에 따라 실제 크기를 유지한다.
+  map.addLayer({id:"gps-acc", type:"circle", source:"gps",
+    paint:{"circle-color":"#1E88E5","circle-opacity":0.13,
+           "circle-stroke-color":"#1E88E5","circle-stroke-opacity":0.35,"circle-stroke-width":1,
+           "circle-radius":["interpolate",["exponential",2],["zoom"],
+              0,0, 22,["/",["*",["get","acc"],4194304],["*",156543.03,["get","cosLat"]]]]}});
+  map.addLayer({id:"gps-dot", type:"circle", source:"gps",
+    paint:{"circle-radius":6,"circle-color":"#1E88E5","circle-stroke-color":"#fff","circle-stroke-width":2.5}});
+}
+function gpsStop(){
+  if(gpsWatch!==null){ navigator.geolocation.clearWatch(gpsWatch); gpsWatch=null; }
+  gpsFollow=false;
+  ["gps-dot","gps-acc"].forEach(id=>{ if(map.getLayer(id)) map.removeLayer(id); });
+  if(map.getSource("gps")) map.removeSource("gps");
+  document.getElementById("btnGps").classList.remove("on");
+}
+function gpsStart(){
+  const btn=document.getElementById("btnGps");
+  if(gpsWatch!==null){ gpsStop(); status("현위치를 껐습니다"); return; }
+  if(!navigator.geolocation){ status("이 브라우저는 위치 기능을 지원하지 않습니다", true); return; }
+  if(!window.isSecureContext){          // ★여기서 안 막으면 "눌러도 반응이 없다"가 된다
+    status("현위치는 HTTPS 에서만 동작합니다. 지금은 " + location.protocol
+      + " 로 열려 있어 브라우저가 위치를 주지 않습니다 (localhost 만 예외).", true);
+    return;
+  }
+  gpsLayers(); btn.classList.add("on"); gpsFollow=true;
+  status("현위치를 찾는 중…");
+  gpsWatch = navigator.geolocation.watchPosition((pos)=>{
+    const {latitude:lat, longitude:lon, accuracy:acc} = pos.coords;
+    const src=map.getSource("gps"); if(!src) return;
+    src.setData({type:"FeatureCollection", features:[{type:"Feature",
+      properties:{acc:Math.max(acc||0,1), cosLat:Math.cos(lat*Math.PI/180)},
+      geometry:{type:"Point", coordinates:[lon,lat]}}]});
+    if(gpsFollow){ map.easeTo({center:[lon,lat], zoom:Math.max(map.getZoom(),15), duration:600}); gpsFollow=false; }
+    status(`현위치 ${lat.toFixed(5)}, ${lon.toFixed(5)} (±${Math.round(acc)}m)`);
+  }, (err)=>{
+    gpsStop();
+    const why = err.code===1 ? "브라우저에서 위치 권한이 거부됐습니다"
+              : err.code===2 ? "위치를 확인할 수 없습니다(신호 없음)"
+              : "위치 확인이 시간 내에 끝나지 않았습니다";
+    status("현위치 실패 — " + why, true);
+  }, {enableHighAccuracy:true, maximumAge:5000, timeout:15000});
+}
+document.getElementById("btnGps").onclick=gpsStart;
+
+/* ══ 시작 ═══════════════════════════════════════════════════════════════════ */
+map.on("mousemove",(e)=>{
+  document.getElementById("coord").textContent =
+    `${e.lngLat.lat.toFixed(5)}, ${e.lngLat.lng.toFixed(5)}  ·  z${map.getZoom().toFixed(1)}`;
+});
+map.on("zoomend",()=>{
+  if(roadOn && map.getZoom() < ROAD_MINZ)
+    status(`🔍 도로는 z${ROAD_MINZ} 이상에서 보입니다 (지금 z${map.getZoom().toFixed(1)})`);
+});
+map.once("load", async ()=>{
+  setBasemap(curBm);
+  try{                                   // minzoom 은 서버가 알려 준다(사본을 고정하지 않는다)
+    const t=await fetchJson("/tiles/layers");
+    const r=(t.layers||[]).find(l=>l.layer==="road_line");
+    if(r && r.minzoom) ROAD_MINZ=r.minzoom;
+  }catch(e){ /* 못 받으면 기본값 12 */ }
+  await rgInit();
+  const R=FIELD_CFG.region;
+  if(R && R.layer){
+    rgSel={layer:R.layer, code:R.code, name:R.name, parent:"", area:0, t:0};
+    map.fitBounds([[R.bbox[0],R.bbox[1]],[R.bbox[2],R.bbox[3]]],{padding:40, duration:0});
+    rgShow(R.layer);                     // rgLoad 가 이름·면적을 채우고 강조를 건다
+  }
+  roadToggle();                          // 도로는 켠 채로 시작한다(이 페이지의 목적이다)
+});
+</script>
+</body>
+</html>

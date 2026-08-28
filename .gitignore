@@ -1,0 +1,7 @@
+# 자격증명 — 절대 커밋하지 않는다. .env.example 을 복사해서 쓴다.
+.env
+# 사이트는 docs/ 에 굽고 **커밋한다**(GitHub Pages: main / docs).
+# dist/ 는 딴 데로 구웠을 때를 위한 예비 제외.
+dist/
+__pycache__/
+*.pyc
