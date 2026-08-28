@@ -53,7 +53,9 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
        max-width:calc(100vw - 24px - env(safe-area-inset-left) - env(safe-area-inset-right))}
   #ctl::-webkit-scrollbar{display:none}
   #status{font-size:14px;padding:11px 16px}
-  #btnGps{display:none}                     /* 바 대신 아래 큰 버튼을 쓴다 */
+  /* ★바 버튼을 숨기지 않는다. 종전엔 숨기고 FAB 만 띄웠는데, 기기가 pointer:coarse 로
+     안 잡히면 **둘 다 사라져** 현위치를 아예 못 누른다(폰에서 실제로 그랬다).
+     둘 다 두면 최악이라도 버튼이 하나는 남는다. */
   #gpsFab{display:flex}
 }
 /* 엄지로 누르는 현위치 버튼 — 터치 기기에서만 뜬다 */
@@ -63,6 +65,17 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
   align-items:center;justify-content:center;font-size:24px;
   background:rgba(255,255,255,.97);box-shadow:var(--shadow);color:var(--muted)}
 #gpsFab.on{background:#1E88E5;color:#fff}
+/* 메모 입력 — window.prompt 는 모바일 브라우저에 따라 막히거나 쓰기 나쁘다.
+   화면 안에서 받는다(아래에서 올라오는 카드). */
+#memoEdit{display:none;position:fixed;z-index:8;left:50%;transform:translateX(-50%);
+  bottom:calc(16px + env(safe-area-inset-bottom));width:min(420px,calc(100vw - 24px));padding:12px}
+#memoEdit textarea{width:100%;box-sizing:border-box;border:1px solid var(--line);border-radius:8px;
+  padding:9px 10px;font:inherit;font-size:14px;resize:vertical;min-height:64px}
+#memoEdit .row{display:flex;gap:6px;margin-top:9px}
+#memoEdit .row button{flex:1;padding:10px;border-radius:7px;border:1px solid var(--line);
+  background:var(--surface);font-size:13px;font-weight:600;cursor:pointer;min-height:44px}
+#memoEdit .row button.pri{background:var(--ink);color:#fff;border-color:var(--ink)}
+#memoEdit .row button.del{color:#B3261E;border-color:#F0C4C0}
 @media (max-width:700px){#coord{display:none}}
 </style>
 </head>
@@ -75,11 +88,20 @@ html,body{margin:0;height:100%;height:100dvh;overscroll-behavior:none;font-famil
   <button data-bm="topo" id="btnTopo" style="display:none">지형</button>
   <button id="btnAoi" class="sep" style="display:none" title="연구지역으로 이동">⛶ 연구지역</button>
   <button id="btnRoad" title="도로 중심선 — 확대해야 보입니다">도로</button>
-  <button id="btnMemo" class="sep" title="지점을 눌러 메모 — 이 기기에만 저장됩니다">✎ 메모</button>
+  <button id="btnMemo" class="sep" title="누를 때마다 점 → 선 → 면 → 끔. 메모는 이 기기에만 저장됩니다">✎ 메모</button>
+  <button id="btnMemoDone" style="display:none" title="그리던 도형을 마칩니다">✓</button>
   <button id="btnMemoOut" style="display:none" title="메모를 GeoJSON 파일로 내보내기">⤓</button>
   <button id="btnGps" title="현위치 — HTTPS 에서만 동작합니다">◎ 현위치</button>
 </div>
 <button id="gpsFab" title="현위치" aria-label="현위치">◎</button>
+<div class="panel" id="memoEdit">
+  <textarea id="memoText" placeholder="이 지점에 남길 메모"></textarea>
+  <div class="row">
+    <button id="memoSave" class="pri">저장</button>
+    <button id="memoDel" class="del">삭제</button>
+    <button id="memoClose">닫기</button>
+  </div>
+</div>
 <div id="status"></div>
 <div id="coord">—</div>
 
@@ -209,22 +231,38 @@ function roadLayers(){
      paint:{"text-color":"#8E0A47","text-halo-color":"#FFFFFF","text-halo-width":1.8}},
   ];
 }
-function roadToggle(){
+/* 도로 버튼 하나가 **표시와 투명도**를 같이 돈다: 100% → 70% → 40% → 끔 → …
+   ★버튼을 더 늘리지 않으려고 합쳤다. 현장에서 도로가 영상을 가릴 때 한 번 더 누르면 옅어진다.
+   ★테두리는 선보다 더 옅게 간다 — 투명해질수록 흰/검은 테두리가 먼저 눈에 거슬린다. */
+const ROAD_STEPS = [1.0, 0.7, 0.4, 0];      // 0 = 끔
+let roadStep = 0;
+function roadApply(){
+  const op = ROAD_STEPS[roadStep];
   const btn=document.getElementById("btnRoad");
-  if(roadOn){
+  if(op === 0){
     roadLayers().forEach(L=>{ if(map.getLayer(L.id)) map.removeLayer(L.id); });
     if(map.getSource("road")) map.removeSource("road");
-    roadOn=false; btn.classList.remove("on"); status("도로를 껐습니다"); return;
+    roadOn=false; btn.classList.remove("on"); btn.textContent="도로";
+    return;
   }
   if(!map.getSource("road"))
     // maxzoom:16 = 그 위 줌은 16 타일을 확대해 쓴다(서버 부하를 늘리지 않는다)
     map.addSource("road",{type:"vector", tiles:[api("/tiles/road_line/{z}/{x}/{y}.pbf")],
                           minzoom:ROAD_MINZ, maxzoom:16});
   roadLayers().forEach(L=>{ if(!map.getLayer(L.id)) map.addLayer(L); });
-  roadOn=true; btn.classList.add("on");
-  status(map.getZoom() < ROAD_MINZ
-    ? `도로 표시 — 🔍 z${ROAD_MINZ} 이상으로 확대해야 보입니다 (지금 z${map.getZoom().toFixed(1)})`
-    : "도로(중심선) 표시");
+  roadOn=true; btn.classList.add("on"); btn.textContent=`도로 ${Math.round(op*100)}%`;
+  if(map.getLayer("road-line")) map.setPaintProperty("road-line","line-opacity", op);
+  if(map.getLayer("road-case")) map.setPaintProperty("road-case","line-opacity", op*0.5);
+  if(map.getLayer("road-name")) map.setPaintProperty("road-name","text-opacity", op);
+}
+function roadToggle(){
+  roadStep = (roadStep + 1) % ROAD_STEPS.length;
+  roadApply();
+  const op = ROAD_STEPS[roadStep];
+  status(op === 0 ? "도로를 껐습니다"
+    : (map.getZoom() < ROAD_MINZ
+        ? `도로 ${Math.round(op*100)}% — 🔍 z${ROAD_MINZ} 이상으로 확대해야 보입니다`
+        : `도로 ${Math.round(op*100)}%`));
 }
 document.getElementById("btnRoad").onclick=roadToggle;
 { const b=document.getElementById("btnAoi"); if(b) b.onclick=aoiGo; }
@@ -302,15 +340,21 @@ async function riLoad(bounds){
   console.log(`[리] ${feats.length}건`);
 }
 
-/* ══ 메모 — 지점을 눌러 남긴다 ══════════════════════════════════════════════
-   ★서버가 없다(정적 배포). 그래서 메모는 **이 기기 이 브라우저**에만 남는다(localStorage).
-     다른 기기와 나누려면 ⤓ 로 GeoJSON 을 내보내면 된다 — QGIS·다른 지도에서 바로 열린다.
-     기기를 바꾸거나 브라우저 저장소를 지우면 사라진다는 뜻이기도 하다. 그 사실을 숨기지 않는다.
-   ★사진·첨부는 안 된다(용량·서버 없음). 글자만 남긴다. */
+/* ══ 메모 — 점·선·면을 그리고 글을 남긴다 ══════════════════════════════════
+   ★서버가 없다(정적 배포). 메모는 **이 기기 이 브라우저**에만 남는다(localStorage).
+     기기를 바꾸거나 저장소를 지우면 사라진다 — 숨기지 않는다.
+     나누려면 ⤓ 로 GeoJSON 을 내보낸다(QGIS·다른 지도에서 바로 열린다).
+   ★라벨은 도형 위에 직접 얹지 않고 **대표점 하나**를 따로 만들어 찍는다.
+     폴리곤/라인에 symbol 을 얹으면 도형이 여러 타일에 걸칠 때 타일마다 한 번씩 찍혀
+     같은 글이 여러 개로 보인다(연구지역 이름에서 실제로 겪었다). */
 const MEMO_KEY = "fieldmap.memos.v1";
-let memoMode = false;
+const MEMO_MODES = [null, "point", "line", "polygon"];
+const MEMO_LABEL = {null:"✎ 메모", point:"✎ 점", line:"✎ 선", polygon:"✎ 면"};
+let memoModeIdx = 0, drawPts = [];
+const memoMode = () => MEMO_MODES[memoModeIdx];
+
 function memoRead(){
-  try{ const v=JSON.parse(localStorage.getItem(MEMO_KEY)); 
+  try{ const v=JSON.parse(localStorage.getItem(MEMO_KEY));
        if(v && v.type==="FeatureCollection" && Array.isArray(v.features)) return v; }
   catch(e){ console.warn("[메모] 읽기 실패", e); }
   return {type:"FeatureCollection", features:[]};
@@ -319,32 +363,129 @@ function memoWrite(fc){
   try{ localStorage.setItem(MEMO_KEY, JSON.stringify(fc)); }
   catch(e){ status("메모를 저장하지 못했습니다 — 브라우저 저장소가 막혀 있습니다", true); }
 }
+/* 도형 하나의 **대표점** — 라벨을 여기 한 번만 찍는다. */
+function memoAnchor(g){
+  if(g.type==="Point") return g.coordinates;
+  if(g.type==="LineString") return g.coordinates[Math.floor(g.coordinates.length/2)];
+  if(g.type==="Polygon"){
+    const r=g.coordinates[0].slice(0,-1);        // 닫는 점 제외
+    return [r.reduce((a,c)=>a+c[0],0)/r.length, r.reduce((a,c)=>a+c[1],0)/r.length];
+  }
+  return null;
+}
 function memoRender(){
   const fc=memoRead();
-  const src=map.getSource("memo"); if(src) src.setData(fc);
+  const s1=map.getSource("memo"); if(s1) s1.setData(fc);
+  const s2=map.getSource("memo-lbl");
+  if(s2) s2.setData({type:"FeatureCollection", features: fc.features
+    .map(f=>{ const a=memoAnchor(f.geometry); return a &&
+      {type:"Feature", properties:f.properties, geometry:{type:"Point", coordinates:a}}; })
+    .filter(Boolean)});
   const b=document.getElementById("btnMemo");
-  if(b) b.textContent = memoMode ? "✎ 찍는 중" : (fc.features.length ? `✎ 메모 ${fc.features.length}` : "✎ 메모");
-  const x=document.getElementById("btnMemoOut");
-  if(x) x.style.display = fc.features.length ? "" : "none";
+  if(b){
+    const n=fc.features.length, m=memoMode();
+    b.textContent = m ? (drawPts.length ? `${MEMO_LABEL[m]} ${drawPts.length}` : MEMO_LABEL[m])
+                      : (n ? `✎ 메모 ${n}` : "✎ 메모");
+    b.classList.toggle("on", !!m);
+  }
+  const done=document.getElementById("btnMemoDone");
+  if(done) done.style.display = (memoMode()==="line" && drawPts.length>=2)
+                             || (memoMode()==="polygon" && drawPts.length>=3) ? "" : "none";
+  const out=document.getElementById("btnMemoOut");
+  if(out) out.style.display = fc.features.length ? "" : "none";
+}
+function draftRender(){
+  const src=map.getSource("draft"); if(!src) return;
+  const fs=drawPts.map(c=>({type:"Feature",properties:{},geometry:{type:"Point",coordinates:c}}));
+  if(drawPts.length>=2) fs.push({type:"Feature",properties:{},
+    geometry:{type:"LineString",coordinates:drawPts}});
+  src.setData({type:"FeatureCollection", features:fs});
+  memoRender();
 }
 function memoLayers(){
   if(map.getSource("memo")) return;
   map.addSource("memo",{type:"geojson", data:memoRead()});
+  map.addSource("memo-lbl",{type:"geojson", data:{type:"FeatureCollection",features:[]}});
+  map.addSource("draft",{type:"geojson", data:{type:"FeatureCollection",features:[]}});
+  map.addLayer({id:"memo-fill", type:"fill", source:"memo",
+    filter:["==",["geometry-type"],"Polygon"],
+    paint:{"fill-color":"#FFB300","fill-opacity":0.16}});
+  map.addLayer({id:"memo-line", type:"line", source:"memo",
+    filter:["in",["geometry-type"],["literal",["LineString","Polygon"]]],
+    paint:{"line-color":"#FF8F00","line-width":2.6}});
   map.addLayer({id:"memo-dot", type:"circle", source:"memo",
+    filter:["==",["geometry-type"],"Point"],
     paint:{"circle-radius":["interpolate",["linear"],["zoom"],11,5,17,9],
            "circle-color":"#FFB300","circle-stroke-color":"#3E2723","circle-stroke-width":2}});
-  map.addLayer({id:"memo-label", type:"symbol", source:"memo", minzoom:13,
+  map.addLayer({id:"memo-label", type:"symbol", source:"memo-lbl", minzoom:12,
     layout:{"text-field":["get","text"],"text-font":["Noto Sans Regular"],
             "text-size":12,"text-anchor":"top","text-offset":[0,0.9],"text-max-width":11},
     paint:{"text-color":"#3E2723","text-halo-color":"#FFFFFF","text-halo-width":2.0}});
+  map.addLayer({id:"draft-line", type:"line", source:"draft",
+    paint:{"line-color":"#00B0FF","line-width":2.4,"line-dasharray":[2,2]}});
+  map.addLayer({id:"draft-dot", type:"circle", source:"draft",
+    paint:{"circle-radius":5,"circle-color":"#00B0FF","circle-stroke-color":"#fff","circle-stroke-width":2}});
 }
-function memoToggle(){
-  memoMode=!memoMode;
-  document.getElementById("btnMemo").classList.toggle("on", memoMode);
-  map.getCanvas().style.cursor = memoMode ? "crosshair" : "";
-  status(memoMode ? "메모할 지점을 지도에서 누르세요 (기존 메모를 누르면 수정·삭제)"
-                  : "메모 찍기를 껐습니다");
+function memoCycle(){
+  if(drawPts.length) status("그리던 도형을 버렸습니다");
+  drawPts=[]; draftRender();
+  memoModeIdx=(memoModeIdx+1)%MEMO_MODES.length;
+  const m=memoMode();
+  map.getCanvas().style.cursor = m ? "crosshair" : "";
+  status(m==="point"   ? "지점을 누르면 메모를 남깁니다"
+       : m==="line"    ? "선을 그립니다 — 지도를 눌러 점을 찍고 ✓ 로 마칩니다"
+       : m==="polygon" ? "면을 그립니다 — 세 점 이상 찍고 ✓ 로 마칩니다"
+       : "메모 그리기를 껐습니다");
   memoRender();
+}
+function memoFinish(){
+  const m=memoMode();
+  let geom=null;
+  if(m==="line" && drawPts.length>=2) geom={type:"LineString", coordinates:drawPts.slice()};
+  if(m==="polygon" && drawPts.length>=3) geom={type:"Polygon", coordinates:[drawPts.concat([drawPts[0]])]};
+  if(!geom){ status("점이 모자랍니다", true); return; }
+  drawPts=[]; draftRender();
+  memoAdd(geom);                            // 도형을 먼저 남기고, 글은 카드에서 적는다
+  status(m==="line" ? "선을 남겼습니다 — 메모를 적으세요" : "면을 남겼습니다 — 메모를 적으세요");
+}
+/* ── 메모 입력 카드 ─────────────────────────────────────────────────────────
+   ★window.prompt 를 쓰지 않는다. 모바일 브라우저에 따라 **막히거나**(무반응) 화면을
+     가려서, "점은 찍히는데 메모를 못 남긴다"가 된다. 화면 안에서 받는다. */
+let memoEditId = null;
+function memoOpen(id){
+  const f = memoRead().features.find(x=>x.properties.id===id);
+  if(!f) return;
+  memoEditId = id;
+  const ta=document.getElementById("memoText");
+  ta.value = f.properties.text || "";
+  document.getElementById("memoEdit").style.display="block";
+  setTimeout(()=>ta.focus(), 50);
+}
+function memoClose(){
+  memoEditId=null;
+  document.getElementById("memoEdit").style.display="none";
+}
+function memoSaveEdit(){
+  if(!memoEditId) return memoClose();
+  const fc=memoRead(), f=fc.features.find(x=>x.properties.id===memoEditId);
+  if(f) f.properties.text = document.getElementById("memoText").value.trim();
+  memoWrite(fc); memoRender(); memoClose(); status("메모를 저장했습니다");
+}
+function memoDelete(){
+  if(!memoEditId) return memoClose();
+  const fc=memoRead();
+  fc.features = fc.features.filter(x=>x.properties.id!==memoEditId);
+  memoWrite(fc); memoRender(); memoClose(); status("메모를 지웠습니다");
+}
+/* 도형을 저장소에 넣고 바로 편집 카드를 연다 — **점은 누르는 즉시 지도에 찍힌다**.
+   글은 그다음에 적는다(안 적어도 점은 남는다). */
+function memoAdd(geom){
+  const id=`m${Date.now()}${Math.floor(Math.random()*1000)}`;
+  const fc=memoRead();
+  fc.features.push({type:"Feature", geometry:geom,
+    properties:{ id, text:"", at:new Date().toISOString() }});
+  memoWrite(fc); memoRender(); memoOpen(id);
+  return id;
 }
 function memoExport(){
   const fc=memoRead();
@@ -358,27 +499,25 @@ function memoExport(){
   status(`메모 ${fc.features.length}건을 내보냈습니다`);
 }
 map.on("click",(e)=>{
-  const hit = map.getLayer("memo-dot")
-    ? map.queryRenderedFeatures(e.point,{layers:["memo-dot"]}) : [];
-  const fc = memoRead();
-  if(hit.length){                                   // 기존 메모 — 수정하거나 비우면 삭제
-    const id = hit[0].properties.id;
-    const cur = fc.features.find(f=>f.properties.id===id);
-    const t = window.prompt("메모 수정 (비우고 확인하면 삭제)", cur ? cur.properties.text : "");
-    if(t===null) return;
-    if(t.trim()===""){ fc.features = fc.features.filter(f=>f.properties.id!==id); status("메모를 지웠습니다"); }
-    else if(cur){ cur.properties.text = t.trim(); status("메모를 고쳤습니다"); }
-    memoWrite(fc); memoRender(); return;
+  const m=memoMode();
+  // 그리는 중이 아닐 때만 기존 메모를 집는다 — 그리는 중에 눌리면 점이 안 찍힌다
+  if(!m){
+    const ids=["memo-dot","memo-line","memo-fill"].filter(l=>map.getLayer(l));
+    const hit=ids.length ? map.queryRenderedFeatures(e.point,{layers:ids}) : [];
+    if(!hit.length) return;
+    const fc=memoRead(), id=hit[0].properties.id;
+    const cur=fc.features.find(f=>f.properties.id===id);   // eslint-disable-line
+    if(cur) memoOpen(id);                   // 카드에서 고치거나 지운다
+    return;
   }
-  if(!memoMode) return;                             // 찍는 중일 때만 새로 만든다
-  const t = window.prompt("이 지점에 남길 메모");
-  if(t===null || t.trim()==="") return;
-  fc.features.push({type:"Feature",
-    properties:{ id:`m${Date.now()}${Math.floor(Math.random()*1000)}`,
-                 text:t.trim(), at:new Date().toISOString() },
-    geometry:{type:"Point", coordinates:[+e.lngLat.lng.toFixed(6), +e.lngLat.lat.toFixed(6)]}});
-  memoWrite(fc); memoRender();
-  status(`메모를 남겼습니다 (${e.lngLat.lat.toFixed(5)}, ${e.lngLat.lng.toFixed(5)})`);
+  const c=[+e.lngLat.lng.toFixed(6), +e.lngLat.lat.toFixed(6)];
+  if(m==="point"){
+    // ★누르는 즉시 점이 지도에 찍힌다. 글은 카드에서 적는다(안 적어도 점은 남는다).
+    memoAdd({type:"Point", coordinates:c});
+    status(`점을 찍었습니다 (${c[1].toFixed(5)}, ${c[0].toFixed(5)}) — 메모를 적으세요`);
+    return;
+  }
+  drawPts.push(c); draftRender();          // 선·면 — 점을 쌓는다
 });
 
 /* ══ GPS 현위치 ══════════════════════════════════════════════════════════════
@@ -435,7 +574,11 @@ function gpsStart(){
     status("현위치 실패 — " + why, true);
   }, {enableHighAccuracy:true, maximumAge:5000, timeout:15000});
 }
-document.getElementById("btnMemo").onclick=memoToggle;
+document.getElementById("btnMemo").onclick=memoCycle;
+document.getElementById("btnMemoDone").onclick=memoFinish;
+document.getElementById("memoSave").onclick=memoSaveEdit;
+document.getElementById("memoDel").onclick=memoDelete;
+document.getElementById("memoClose").onclick=memoClose;
 document.getElementById("btnMemoOut").onclick=memoExport;
 gpsBtns().forEach(b=>b.onclick=gpsStart);
 map.on("dragstart",()=>{ if(gpsFollow){ gpsFollow=false; status("따라가기 해제 — 현위치 버튼을 다시 누르면 재개"); } });
@@ -468,7 +611,7 @@ map.once("load", async ()=>{
   }catch(e){ /* 못 받으면 기본값 12 */ }
   const aoiBounds = await aoiLoad();
   await riLoad(aoiBounds);
-  roadToggle();                          // 도로는 켠 채로 시작한다(이 페이지의 목적이다)
+  roadStep = 1; roadApply();             // 도로는 켠 채로 시작(기본 70% — 30% 투명)
   memoLayers(); memoRender();            // 저장해 둔 메모를 바로 띄운다
 });
 </script>

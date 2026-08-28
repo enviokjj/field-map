@@ -354,16 +354,42 @@ def main(argv=None):
             ("메모 기능", "MEMO_KEY", "지점을 눌러 글자를 남긴다"),
             ("메모 저장소", "localStorage", "서버가 없어 이 기기에만 남는다"),
             ("메모 내보내기", "memoExport", "GeoJSON 으로 빼내 다른 지도에서 연다"),
-            ("기존 메모 수정·삭제", "queryRenderedFeatures", "찍힌 점을 눌러 고친다"),
+            ("기존 메모 수정·삭제", "queryRenderedFeatures", "찍힌 도형을 눌러 고친다"),
+            ("도형 그리기 3종", 'MEMO_MODES', "점·선·면"),
+            ("그리는 중 미리보기", "draftRender", "찍은 점이 바로 보인다"),
+            ("라벨은 대표점 하나에", "memoAnchor",
+             "도형에 직접 얹으면 타일마다 반복된다(연구지역 이름에서 겪었다)"),
         ):
             _check(res, name, tok in html, why)
+        import re as _re2
+        modes = _re2.search(r"const MEMO_MODES = \[([^\]]*)\]", html)
+        _check(res, "모드 순환에 끔이 있다", bool(modes) and "null" in modes.group(1),
+               "끄지 못하면 지도를 못 움직인다")
+        # ★prompt/confirm 은 모바일 브라우저에 따라 막히거나(무반응) 화면을 가려서
+        #   "점은 찍히는데 메모를 못 남긴다" 가 된다. 화면 안 입력 카드로 받아야 한다.
+        #   (검사는 주석을 걷어낸 코드로 — 왜 쓰면 안 되는지 적은 주석에 걸리지 않게)
+        _check(res, "브라우저 대화상자를 쓰지 않는다",
+               "window.prompt" not in code and "confirm(" not in code,
+               "폰에서 막히면 메모를 못 남긴다")
+        _check(res, "메모 입력 카드", 'id="memoEdit"' in html and "memoSaveEdit" in html)
+        _check(res, "점은 누르는 즉시 찍힌다", "memoAdd(" in code,
+               "글은 그다음에 적는다 — 안 적어도 점은 남는다")
+
+        print("\n⑦c 도로 투명도")
+        st_ = _re2.search(r"const ROAD_STEPS = \[([^\]]*)\]", html)
+        vals = [v.strip() for v in st_.group(1).split(",")] if st_ else []
+        _check(res, "투명도 단계 제공", len(vals) >= 3 and "0" in vals,
+               f"{vals} (0=끔)" if vals else "없음")
+        _check(res, "기본이 반투명", "roadStep = 1" in html,
+               "100% 는 영상을 가린다 — 70%(30% 투명)로 시작")
+        _check(res, "투명도를 실제로 반영", 'setPaintProperty("road-line","line-opacity"' in html)
 
         print("\n⑧ 모바일·태블릿")
         for name, tok, why in (
             ("터치 타깃 확대", "@media (pointer:coarse)", "44px — 손끝 접촉면 기준 최소값"),
             ("주소창 높이 대응", "100dvh", "100vh 는 모바일에서 출렁인다"),
             ("노치 안전영역", "env(safe-area-inset", "viewport-fit=cover 와 짝"),
-            ("엄지 현위치 버튼", 'id="gpsFab"', "터치 기기에서만 뜬다"),
+            ("엄지 현위치 버튼", 'id="gpsFab"', "작은 화면에서 추가로 뜬다"),
             ("회전 잠금", "disableRotation", "실수로 돌아가면 방향을 잃는다"),
             ("따라가기 해제 조건", 'map.on("dragstart"', "지도를 끌면 풀린다"),
         ):
@@ -371,6 +397,10 @@ def main(argv=None):
         # 버튼 두 개(바·FAB)가 같은 상태를 보여야 한다 — 한쪽만 바꾸면 어긋난다
         # ★`gpsMark(` 로 3개를 세려다 틀렸다 — 정의는 `gpsMark = (on) =>` 라 안 걸린다.
         #   정의 존재 + 호출 2곳(켤 때·끌 때)으로 본다.
+        # ★바 버튼을 숨기면 안 된다 — 기기가 pointer:coarse 로 안 잡히면 FAB 도 안 떠서
+        #   현위치 버튼이 **둘 다 사라진다**(폰에서 실제로 그랬다).
+        _check(res, "바의 현위치 버튼을 숨기지 않는다", "#btnGps{display:none}" not in html,
+               "둘 다 사라지는 실패를 막는다")
         _check(res, "GPS 버튼 상태 동기화",
                "const gpsMark" in html and html.count("gpsMark(") >= 2,
                "바 버튼과 엄지 버튼이 같은 상태를 보여야 한다")
